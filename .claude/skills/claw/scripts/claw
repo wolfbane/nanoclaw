@@ -161,6 +161,19 @@ def run_container(runtime: str, image: str, payload: dict,
     for key, value in payload.get("secrets", {}).items():
         cmd += ["-e", f"{key}={value}"]
 
+    # Ensure the container doesn't run as root — Claude refuses
+    # --allow-dangerously-skip-permissions as root.
+    # For main-group containers the entrypoint starts as root (for mount --bind),
+    # then drops to RUN_UID via setpriv. Non-main containers just get --user.
+    import os as _os
+    host_uid = _os.getuid()
+    host_gid = _os.getgid()
+    if is_main:
+        cmd += ["-e", f"RUN_UID={host_uid}", "-e", f"RUN_GID={host_gid}",
+                "-e", "HOME=/home/node"]
+    else:
+        cmd += ["--user", f"{host_uid}:{host_gid}", "-e", "HOME=/home/node"]
+
     if folder:
         for host, container, readonly in build_mounts(folder, is_main):
             if readonly:
