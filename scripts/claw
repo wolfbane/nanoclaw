@@ -23,9 +23,7 @@ import re
 import sqlite3
 import subprocess
 import sys
-import tempfile
 import threading
-import urllib.request
 from pathlib import Path
 
 # ── Globals ─────────────────────────────────────────────────────────────────
@@ -68,8 +66,6 @@ SECRET_KEYS = [
     "OLLAMA_HOST",
 ]
 
-ONECLI_ENV_KEYS = ["ONECLI_URL"]
-
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 def detect_runtime(preference: str | None) -> str:
@@ -84,10 +80,10 @@ def detect_runtime(preference: str | None) -> str:
     sys.exit("error: neither 'container' nor 'docker' found. Install one or pass --runtime.")
 
 
-def read_env(env_file: Path, keys: list) -> dict:
-    result = {}
+def read_secrets(env_file: Path) -> dict:
+    secrets = {}
     if not env_file.exists():
-        return result
+        return secrets
     for line in env_file.read_text().splitlines():
         line = line.strip()
         if not line or line.startswith("#"):
@@ -95,43 +91,9 @@ def read_env(env_file: Path, keys: list) -> dict:
         if "=" in line:
             key, _, val = line.partition("=")
             key = key.strip()
-            if key in keys:
-                result[key] = val.strip()
-    return result
-
-
-def read_secrets(env_file: Path) -> dict:
-    return read_env(env_file, SECRET_KEYS)
-
-
-def apply_onecli_config(cmd: list, env_file: Path) -> bool:
-    """Fetch OneCLI container config and add -e / -v flags to cmd.
-
-    Returns True if OneCLI was reachable and config was applied.
-    """
-    onecli_env = read_env(env_file, ONECLI_ENV_KEYS)
-    url = onecli_env.get("ONECLI_URL", "http://127.0.0.1:10254")
-    config_url = f"{url.rstrip('/')}/api/container-config"
-    try:
-        with urllib.request.urlopen(config_url, timeout=3) as resp:
-            config = json.loads(resp.read())
-    except Exception as e:
-        dbg(f"OneCLI not reachable ({e}), falling back to raw secrets")
-        return False
-
-    for key, value in config.get("env", {}).items():
-        cmd += ["-e", f"{key}={value}"]
-
-    ca_cert = config.get("caCertificate")
-    ca_container_path = config.get("caCertificateContainerPath", "/tmp/onecli-gateway-ca.pem")
-    if ca_cert:
-        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".pem", mode="w")
-        tmp.write(ca_cert)
-        tmp.close()
-        cmd += ["-v", f"{tmp.name}:{ca_container_path}:ro"]
-
-    dbg("OneCLI config applied")
-    return True
+            if key in SECRET_KEYS:
+                secrets[key] = val.strip()
+    return secrets
 
 
 def get_groups(db: Path) -> list[dict]:
@@ -195,11 +157,9 @@ def run_container(runtime: str, image: str, payload: dict,
                   timeout: int = 300, env_file: Path | None = None) -> None:
     cmd = [runtime, "run", "-i", "--rm"]
 
-    # Inject credentials via OneCLI gateway; fall back to raw secrets from .env
-    onecli_applied = apply_onecli_config(cmd, env_file or ENV_FILE)
-    if not onecli_applied:
-        for key, value in payload.get("secrets", {}).items():
-            cmd += ["-e", f"{key}={value}"]
+    # Inject credentials from .env as env vars
+    for key, value in payload.get("secrets", {}).items():
+        cmd += ["-e", f"{key}={value}"]
 
     if folder:
         for host, container, readonly in build_mounts(folder, is_main):
