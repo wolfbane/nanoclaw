@@ -72,12 +72,11 @@ def detect_runtime(preference: str | None) -> str:
     if preference:
         dbg(f"runtime: forced to {preference}")
         return preference
-    for rt in ("container", "docker"):
-        result = subprocess.run(["which", rt], capture_output=True)
-        if result.returncode == 0:
-            dbg(f"runtime: auto-detected {rt} at {result.stdout.decode().strip()}")
-            return rt
-    sys.exit("error: neither 'container' nor 'docker' found. Install one or pass --runtime.")
+    result = subprocess.run(["which", "container"], capture_output=True)
+    if result.returncode == 0:
+        dbg(f"runtime: auto-detected container at {result.stdout.decode().strip()}")
+        return "container"
+    sys.exit("error: 'container' not found. Install Apple Container (macOS 15+) from https://github.com/apple/container/releases.")
 
 
 def read_secrets(env_file: Path) -> dict:
@@ -301,7 +300,7 @@ def main():
     parser.add_argument("-s", "--session", help="Session ID to resume")
     parser.add_argument("-p", "--pipe", action="store_true",
                         help="Read prompt from stdin (can be combined with a prompt arg as prefix)")
-    parser.add_argument("--runtime", choices=["docker", "container"],
+    parser.add_argument("--runtime", choices=["container"],
                         help="Container runtime (default: auto-detect)")
     parser.add_argument("--image", default=IMAGE, help=f"Container image (default: {IMAGE})")
     parser.add_argument("--list-groups", action="store_true", help="List registered groups and exit")

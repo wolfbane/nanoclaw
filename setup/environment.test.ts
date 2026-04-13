@@ -6,7 +6,7 @@ import Database from 'better-sqlite3';
 /**
  * Tests for the environment check step.
  *
- * Verifies: config detection, Docker/AC detection, DB queries.
+ * Verifies: config detection, Apple Container detection, DB queries.
  */
 
 describe('environment detection', () => {
@@ -96,10 +96,10 @@ describe('credentials detection', () => {
   });
 });
 
-describe('Docker detection logic', () => {
+describe('runtime detection logic', () => {
   it('commandExists returns boolean', async () => {
     const { commandExists } = await import('./platform.js');
-    expect(typeof commandExists('docker')).toBe('boolean');
+    expect(typeof commandExists('container')).toBe('boolean');
     expect(typeof commandExists('nonexistent_binary_xyz')).toBe('boolean');
   });
 });

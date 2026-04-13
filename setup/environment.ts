@@ -27,18 +27,6 @@ export async function run(_args: string[]): Promise<void> {
     appleContainer = 'installed';
   }
 
-  // Check Docker
-  let docker: 'running' | 'installed_not_running' | 'not_found' = 'not_found';
-  if (commandExists('docker')) {
-    try {
-      const { execSync } = await import('child_process');
-      execSync('docker info', { stdio: 'ignore' });
-      docker = 'running';
-    } catch {
-      docker = 'installed_not_running';
-    }
-  }
-
   // Check existing config
   const hasEnv = fs.existsSync(path.join(projectRoot, '.env'));
 
@@ -71,7 +59,6 @@ export async function run(_args: string[]): Promise<void> {
       platform,
       wsl,
       appleContainer,
-      docker,
       hasEnv,
       hasAuth,
       hasRegisteredGroups,
@@ -84,7 +71,6 @@ export async function run(_args: string[]): Promise<void> {
     IS_WSL: wsl,
     IS_HEADLESS: headless,
     APPLE_CONTAINER: appleContainer,
-    DOCKER: docker,
     HAS_ENV: hasEnv,
     HAS_AUTH: hasAuth,
     HAS_REGISTERED_GROUPS: hasRegisteredGroups,
