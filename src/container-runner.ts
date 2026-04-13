@@ -362,6 +362,7 @@ export async function runContainerAgent(
     let parseBuffer = '';
     let newSessionId: string | undefined;
     let outputChain = Promise.resolve();
+    let outputChainError: Error | null = null;
 
     container.stdout.on('data', (data) => {
       const chunk = data.toString();
@@ -404,7 +405,16 @@ export async function runContainerAgent(
             resetTimeout();
             // Call onOutput for all markers (including null results)
             // so idle timers start even for "silent" query completions.
-            outputChain = outputChain.then(() => onOutput(parsed));
+            outputChain = outputChain
+                .then(() => onOutput(parsed))
+                .catch((err) => {
+                  outputChainError =
+                    err instanceof Error ? err : new Error(String(err));
+                  logger.error(
+                    { group: group.name, err },
+                    'onOutput callback failed',
+                  );
+                });
           } catch (err) {
             logger.warn(
               { group: group.name, error: err },
@@ -499,7 +509,7 @@ export async function runContainerAgent(
           );
           outputChain.then(() => {
             resolve({
-              status: 'success',
+              status: outputChainError ? 'error' : 'success',
               result: null,
               newSessionId,
             });
@@ -617,7 +627,7 @@ export async function runContainerAgent(
             'Container completed (streaming mode)',
           );
           resolve({
-            status: 'success',
+            status: outputChainError ? 'error' : 'success',
             result: null,
             newSessionId,
           });
