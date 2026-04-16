@@ -14,6 +14,7 @@ import {
   DATA_DIR,
   GROUPS_DIR,
   IDLE_TIMEOUT,
+  STORE_DIR,
   TIMEZONE,
 } from './config.js';
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
@@ -82,9 +83,8 @@ function buildVolumeMounts(
 
     // Main gets writable access to the store (SQLite DB) so it can
     // query and write to the database directly.
-    const storeDir = path.join(projectRoot, 'store');
     mounts.push({
-      hostPath: storeDir,
+      hostPath: STORE_DIR,
       containerPath: '/workspace/project/store',
       readonly: false,
     });

@@ -22,8 +22,15 @@ export const POLL_INTERVAL = 2000;
 export const SCHEDULER_POLL_INTERVAL = 60000;
 
 // Absolute paths needed for container mounts
-const PROJECT_ROOT = process.cwd();
+export const PROJECT_ROOT = process.cwd();
 const HOME_DIR = process.env.HOME || os.homedir();
+
+// Support multiple instances sharing the same codebase.
+// NANOCLAW_DATA_DIR overrides where store/, groups/, and data/ live so a
+// second instance can use a separate data directory without a separate clone.
+const DATA_ROOT = process.env.NANOCLAW_DATA_DIR
+  ? path.resolve(process.env.NANOCLAW_DATA_DIR)
+  : PROJECT_ROOT;
 
 // Mount security: allowlist stored OUTSIDE project root, never mounted into containers
 export const MOUNT_ALLOWLIST_PATH = path.join(
@@ -38,9 +45,9 @@ export const SENDER_ALLOWLIST_PATH = path.join(
   'nanoclaw',
   'sender-allowlist.json',
 );
-export const STORE_DIR = path.resolve(PROJECT_ROOT, 'store');
-export const GROUPS_DIR = path.resolve(PROJECT_ROOT, 'groups');
-export const DATA_DIR = path.resolve(PROJECT_ROOT, 'data');
+export const STORE_DIR = path.resolve(DATA_ROOT, 'store');
+export const GROUPS_DIR = path.resolve(DATA_ROOT, 'groups');
+export const DATA_DIR = path.resolve(DATA_ROOT, 'data');
 
 export const CONTAINER_IMAGE =
   process.env.CONTAINER_IMAGE || 'nanoclaw-agent:latest';
