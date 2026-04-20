@@ -1,11 +1,11 @@
 ---
 name: slack-formatting
-description: Format messages for Slack using mrkdwn syntax. Use when responding to Slack channels (folder starts with "slack_" or JID contains slack identifiers).
+description: Format messages for Slack. Use when responding to Slack channels (folder starts with "slack_" or JID contains slack identifiers).
 ---
 
-# Slack Message Formatting (mrkdwn)
+# Slack Message Formatting
 
-When responding to Slack channels, use Slack's mrkdwn syntax instead of standard Markdown.
+NanoClaw converts standard CommonMark to Slack's mrkdwn syntax before sending, so **write CommonMark for the basics** and use Slack-native syntax only for things CommonMark can't express (user/channel mentions, emoji shortcodes).
 
 ## How to detect Slack context
 
@@ -13,82 +13,86 @@ Check your group folder name or workspace path:
 - Folder starts with `slack_` (e.g., `slack_engineering`, `slack_general`)
 - Or check `/workspace/group/` path for `slack_` prefix
 
-## Formatting reference
+## Text styles — write CommonMark
 
-### Text styles
+| Style | Write this | Sent as |
+|-------|------------|---------|
+| Bold | `**text**` | `*text*` |
+| Italic | `*text*` | `_text_` |
+| Link | `[text](url)` | `<url\|text>` |
+| Heading `#`–`######` | `## Heading` | `*Heading*` |
+| Code (inline) | `` `code` `` | unchanged |
+| Code block | ` ```code``` ` | unchanged |
 
-| Style | Syntax | Example |
-|-------|--------|---------|
-| Bold | `*text*` | *bold text* |
-| Italic | `_text_` | _italic text_ |
-| Strikethrough | `~text~` | ~strikethrough~ |
-| Code (inline) | `` `code` `` | `inline code` |
-| Code block | ` ```code``` ` | Multi-line code |
+Do NOT write Slack-native syntax directly for bold or links — the converter treats single-asterisk `*text*` as italic per CommonMark and will mangle it.
 
-### Links and mentions
+## Slack-specific — write native
 
-```
-<https://example.com|Link text>     # Named link
-<https://example.com>                # Auto-linked URL
-<@U1234567890>                       # Mention user by ID
-<#C1234567890>                       # Mention channel by ID
-<!here>                              # @here
-<!channel>                           # @channel
-```
-
-### Lists
-
-Slack supports simple bullet lists but NOT numbered lists:
+These have no CommonMark equivalent; write them directly:
 
 ```
-• First item
-• Second item
-• Third item
+<@U1234567890>         # Mention a user by ID
+<#C1234567890>         # Mention a channel by ID
+<!here>                # @here
+<!channel>             # @channel
+:white_check_mark:     # Emoji shortcodes
+:rocket:
+~strikethrough~        # Slack's single-tilde strikethrough
 ```
 
-Use `•` (bullet character) or `- ` or `* ` for bullets.
+## Lists
 
-### Block quotes
+Slack supports bullet lists but NOT numbered lists:
+
+- Use `- ` or `* ` bullets (CommonMark) — renders fine
+- Or the bullet character `•` directly
+- Avoid `1.` `2.` numbered lists
+
+## Block quotes
 
 ```
 > This is a block quote
 > It can span multiple lines
 ```
 
-### Emoji
-
-Use standard emoji shortcodes: `:white_check_mark:`, `:x:`, `:rocket:`, `:tada:`
-
-## What NOT to use
-
-- **NO** `##` headings (use `*Bold text*` for headers instead)
-- **NO** `**double asterisks**` for bold (use `*single asterisks*`)
-- **NO** `[text](url)` links (use `<url|text>` instead)
-- **NO** `1.` numbered lists (use bullets with numbers: `• 1. First`)
-- **NO** tables (use code blocks or plain text alignment)
-- **NO** `---` horizontal rules
+Works the same in CommonMark and mrkdwn.
 
 ## Example message
+
+```markdown
+**Daily Standup Summary**
+
+*March 21, 2026*
+
+- **Completed:** Fixed authentication bug in login flow
+- **In Progress:** Building new dashboard widgets
+- **Blocked:** Waiting on API access from DevOps
+
+> Next sync: Monday 10am
+
+:white_check_mark: All tests passing | [View Build](https://ci.example.com/builds/123)
+```
+
+After conversion this becomes:
 
 ```
 *Daily Standup Summary*
 
 _March 21, 2026_
 
-• *Completed:* Fixed authentication bug in login flow
-• *In Progress:* Building new dashboard widgets
-• *Blocked:* Waiting on API access from DevOps
+- *Completed:* Fixed authentication bug in login flow
+- *In Progress:* Building new dashboard widgets
+- *Blocked:* Waiting on API access from DevOps
 
 > Next sync: Monday 10am
 
 :white_check_mark: All tests passing | <https://ci.example.com/builds/123|View Build>
 ```
 
-## Quick rules
+## What NOT to do
 
-1. Use `*bold*` not `**bold**`
-2. Use `<url|text>` not `[text](url)`
-3. Use `•` bullets, avoid numbered lists
-4. Use `:emoji:` shortcodes
-5. Quote blocks with `>`
-6. Skip headings — use bold text instead
+- NO `*single asterisks*` for bold — that's CommonMark italic and gets converted to `_italic_`
+- NO `<url|text>` link syntax directly — write `[text](url)` and let the converter handle it
+- NO `1.` `2.` numbered lists — Slack doesn't render them
+- NO tables — Slack doesn't render them (use code blocks or plain text)
+- NO `---` horizontal rules — Slack doesn't render them (they get stripped)

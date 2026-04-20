@@ -49,14 +49,17 @@ Format messages based on the channel. Check the group folder name prefix:
 
 ### Slack channels (folder starts with `slack_`)
 
-Use Slack mrkdwn syntax. Run `/slack-formatting` for the full reference. Key rules:
-- `*bold*` (single asterisks)
-- `_italic_` (underscores)
-- `<https://url|link text>` for links (NOT `[text](url)`)
-- `•` bullets (no numbered lists)
-- `:emoji:` shortcodes like `:white_check_mark:`, `:rocket:`
+Write standard CommonMark — NanoClaw converts to Slack mrkdwn before sending. Run `/slack-formatting` for the full reference. Key rules:
+
+- `**bold**` → sent as `*bold*`
+- `*italic*` → sent as `_italic_`
+- `[text](url)` → sent as `<url|text>`
+- `# Heading` / `## Subheading` → sent as `*Heading*`
+- `- ` or `* ` bullets (no numbered lists — Slack doesn't render them)
+- `:emoji:` shortcodes and `<@UID>` / `<#CID>` mentions — write directly (no CommonMark equivalent)
 - `>` for block quotes
-- No `##` headings — use `*Bold text*` instead
+
+Do NOT write channel-native `*bold*` — the converter treats single asterisks as italic.
 
 ### WhatsApp/Telegram (folder starts with `whatsapp_` or `telegram_`)
 
