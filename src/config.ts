@@ -63,6 +63,10 @@ export const CREDENTIAL_PROXY_PORT = parseInt(
   process.env.CREDENTIAL_PROXY_PORT || '3001',
   10,
 );
+export const CALDAV_SERVICE_PORT = parseInt(
+  process.env.CALDAV_SERVICE_PORT || '3002',
+  10,
+);
 export const MAX_MESSAGES_PER_PROMPT = Math.max(
   1,
   parseInt(process.env.MAX_MESSAGES_PER_PROMPT || '10', 10) || 10,

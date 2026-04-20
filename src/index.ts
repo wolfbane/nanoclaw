@@ -3,6 +3,7 @@ import path from 'path';
 
 import {
   ASSISTANT_NAME,
+  CALDAV_SERVICE_PORT,
   CREDENTIAL_PROXY_PORT,
   DEFAULT_TRIGGER,
   getTriggerPattern,
@@ -11,16 +12,14 @@ import {
   POLL_INTERVAL,
   TIMEZONE,
 } from './config.js';
+import { startCaldavService } from './caldav-service.js';
 import { startCredentialProxy } from './credential-proxy.js';
 import './channels/index.js';
 import {
   getChannelFactory,
   getRegisteredChannelNames,
 } from './channels/registry.js';
-import {
-  writeGroupsSnapshot,
-  writeTasksSnapshot,
-} from './container-runner.js';
+import { writeGroupsSnapshot, writeTasksSnapshot } from './container-runner.js';
 import {
   cleanupOrphans,
   ensureContainerRuntimeRunning,
@@ -339,10 +338,29 @@ async function main(): Promise<void> {
     PROXY_BIND_HOST,
   );
 
+  // Start CalDAV service for third-party (iCloud) calendar access.
+  // Returns null when ICLOUD_APPLE_ID / ICLOUD_APP_PASSWORD are not set —
+  // NanoClaw starts either way, and the container MCP fails fast when the
+  // service URL is unreachable.
+  let caldavServer: Awaited<ReturnType<typeof startCaldavService>> | null =
+    null;
+  try {
+    caldavServer = await startCaldavService(
+      CALDAV_SERVICE_PORT,
+      PROXY_BIND_HOST,
+    );
+  } catch (err) {
+    logger.error(
+      { err },
+      'CalDAV service failed to start — continuing without it',
+    );
+  }
+
   // Graceful shutdown handlers
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutdown signal received');
     proxyServer.close();
+    caldavServer?.close();
     await queue.shutdown(10000);
     for (const ch of channels) await ch.disconnect();
     process.exit(0);

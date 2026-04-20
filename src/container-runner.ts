@@ -7,6 +7,7 @@ import fs from 'fs';
 import path from 'path';
 
 import {
+  CALDAV_SERVICE_PORT,
   CONTAINER_IMAGE,
   CONTAINER_MAX_OUTPUT_SIZE,
   CONTAINER_TIMEOUT,
@@ -56,6 +57,26 @@ interface VolumeMount {
   hostPath: string;
   containerPath: string;
   readonly: boolean;
+}
+
+function collectTsStats(dir: string): { count: number; maxMtimeMs: number } {
+  let count = 0;
+  let maxMtimeMs = 0;
+  const walk = (current: string) => {
+    const entries = fs.readdirSync(current, { withFileTypes: true });
+    for (const entry of entries) {
+      const full = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        walk(full);
+      } else if (entry.isFile() && entry.name.endsWith('.ts')) {
+        count++;
+        const mtime = fs.statSync(full).mtimeMs;
+        if (mtime > maxMtimeMs) maxMtimeMs = mtime;
+      }
+    }
+  };
+  walk(dir);
+  return { count, maxMtimeMs };
 }
 
 function buildVolumeMounts(
@@ -203,14 +224,19 @@ function buildVolumeMounts(
     'agent-runner-src',
   );
   if (fs.existsSync(agentRunnerSrc)) {
-    const srcIndex = path.join(agentRunnerSrc, 'index.ts');
-    const cachedIndex = path.join(groupAgentRunnerDir, 'index.ts');
+    // Scan all .ts files, not just index.ts — a new MCP file (e.g.
+    // caldav-mcp-stdio.ts) must invalidate the cache even though index.ts
+    // did not change.
+    const srcStats = collectTsStats(agentRunnerSrc);
+    const cachedStats = fs.existsSync(groupAgentRunnerDir)
+      ? collectTsStats(groupAgentRunnerDir)
+      : { count: 0, maxMtimeMs: 0 };
     const needsCopy =
       !fs.existsSync(groupAgentRunnerDir) ||
-      !fs.existsSync(cachedIndex) ||
-      (fs.existsSync(srcIndex) &&
-        fs.statSync(srcIndex).mtimeMs > fs.statSync(cachedIndex).mtimeMs);
+      srcStats.count !== cachedStats.count ||
+      srcStats.maxMtimeMs > cachedStats.maxMtimeMs;
     if (needsCopy) {
+      fs.rmSync(groupAgentRunnerDir, { recursive: true, force: true });
       fs.cpSync(agentRunnerSrc, groupAgentRunnerDir, { recursive: true });
     }
   }
@@ -247,6 +273,13 @@ function buildContainerArgs(
   args.push(
     '-e',
     `ANTHROPIC_BASE_URL=http://${CONTAINER_HOST_GATEWAY}:${CREDENTIAL_PROXY_PORT}`,
+  );
+
+  // Point the container's CalDAV MCP at the host-side service.
+  // No credentials travel on this URL — just JSON RPC over the bridge network.
+  args.push(
+    '-e',
+    `NANOCLAW_CALDAV_SERVICE_URL=http://${CONTAINER_HOST_GATEWAY}:${CALDAV_SERVICE_PORT}`,
   );
 
   // Mirror the host's auth method with a placeholder value.
