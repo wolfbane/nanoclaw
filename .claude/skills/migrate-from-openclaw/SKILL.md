@@ -64,7 +64,7 @@ Then explain the key architectural differences. Don't dump a table — paraphras
 - **Container isolation:** NanoClaw runs each agent in an isolated Linux container (Docker or Apple Container). OpenClaw runs everything in one process. This means stronger isolation but also means each group is its own sandbox.
 - **Group-based memory:** In OpenClaw, all groups under one agent share the same SOUL.md, MEMORY.md, and IDENTITY.md. In NanoClaw, each group has its own filesystem and CLAUDE.md. Shared state goes in `groups/global/CLAUDE.md` (mounted read-only into all non-main containers).
 - **Channel skills:** In OpenClaw, channels are configured in `openclaw.json`. In NanoClaw, channels are installed as code via skills (`/add-telegram`, `/add-whatsapp`, etc.) and configured through `.env` variables.
-- **Simpler config:** NanoClaw has no config file — behavior is in the code and `CLAUDE.md` files. Credentials live in `.env` or the OneCLI vault.
+- **Simpler config:** NanoClaw has no config file — behavior is in the code and `CLAUDE.md` files. Credentials live in `.env`.
 
 AskUserQuestion: "Ready to start migrating? I'll go through each area one at a time."
 1. **Yes, let's go** — proceed to Phase 1
@@ -344,7 +344,7 @@ npx tsx ${CLAUDE_SKILL_DIR}/scripts/extract-channel-credentials.ts --state-dir <
 
 The script writes the credential directly to `.env` using the correct NanoClaw variable name (e.g. `TELEGRAM_BOT_TOKEN`). Check the status block for `WRITTEN_TO` and `WRITTEN_COUNT` to confirm.
 
-**Credential destination note:** Credentials are saved to `.env` for now. During `/setup`, the credential step will either keep them in `.env` (Apple Container) or migrate them to the OneCLI vault (Docker). The user doesn't need to worry about this now.
+**Credential destination note:** Credentials are saved to `.env`. The `/setup` flow finalizes their handling.
 
 For Slack: there are two credentials (bot token + app token). The script handles both in one run — check `HAS_CREDENTIAL_2` and `NANOCLAW_ENV_VAR_2` in the status block.
 
