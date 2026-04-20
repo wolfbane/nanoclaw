@@ -5,6 +5,7 @@ import path from 'path';
 import { Api, Bot } from 'grammy';
 
 import { ASSISTANT_NAME, TRIGGER_PATTERN } from '../config.js';
+import { logOutboundMessage } from '../db.js';
 import { readEnvFile } from '../env.js';
 import { resolveGroupFolderPath } from '../group-folder.js';
 import { logger } from '../logger.js';
@@ -14,6 +15,7 @@ import {
   OnChatMetadata,
   OnInboundMessage,
   RegisteredGroup,
+  SendOptions,
 } from '../types.js';
 
 export interface TelegramChannelOpts {
@@ -294,7 +296,7 @@ export class TelegramChannel implements Channel {
         const msgId = ctx.message.message_id.toString();
         const filename =
           opts.filename ||
-          `${placeholder.replace(/[\[\] ]/g, '').toLowerCase()}_${msgId}`;
+          `${placeholder.replace(/[[\] ]/g, '').toLowerCase()}_${msgId}`;
         this.downloadFile(opts.fileId, group.folder, filename).then(
           (filePath) => {
             if (filePath) {
@@ -379,12 +381,15 @@ export class TelegramChannel implements Channel {
   async sendMessage(
     jid: string,
     text: string,
-    threadId?: string,
+    opts: SendOptions = {},
   ): Promise<void> {
     if (!this.bot) {
       logger.warn('Telegram bot not initialized');
       return;
     }
+
+    const threadId = opts.threadId;
+    const source = opts.source ?? 'channel';
 
     try {
       const numericId = jid.replace(/^tg:/, '');
@@ -411,6 +416,23 @@ export class TelegramChannel implements Channel {
           );
         }
       }
+      const parseMode: 'markdown' | 'plain' | 'mixed' = results.every(
+        (r) => r.parseMode === 'markdown',
+      )
+        ? 'markdown'
+        : results.every((r) => r.parseMode === 'plain')
+          ? 'plain'
+          : 'mixed';
+      logOutboundMessage({
+        chat_jid: jid,
+        channel: 'telegram',
+        channel_message_ids: results.map((r) => r.messageId),
+        parts: results.length,
+        length: text.length,
+        parse_mode: parseMode,
+        thread_id: threadId ?? null,
+        source,
+      });
       logger.info(
         {
           jid,
@@ -419,11 +441,7 @@ export class TelegramChannel implements Channel {
           threadId,
           parts: results.length,
           messageIds: results.map((r) => r.messageId),
-          parseMode: results.every((r) => r.parseMode === 'markdown')
-            ? 'markdown'
-            : results.every((r) => r.parseMode === 'plain')
-              ? 'plain'
-              : 'mixed',
+          parseMode,
         },
         'Telegram message sent',
       );

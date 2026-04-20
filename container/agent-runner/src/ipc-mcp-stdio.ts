@@ -8,30 +8,114 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import fs from 'fs';
+import fsp from 'fs/promises';
 import path from 'path';
 import { CronExpressionParser } from 'cron-parser';
 
 const IPC_DIR = '/workspace/ipc';
 const MESSAGES_DIR = path.join(IPC_DIR, 'messages');
 const TASKS_DIR = path.join(IPC_DIR, 'tasks');
+const ACKS_DIR = path.join(IPC_DIR, 'acks');
+
+// Host polls IPC every 1s; 5s covers ~4 polling cycles plus channel latency.
+const ACK_TIMEOUT_MS = 5000;
+const ACK_POLL_INTERVAL_MS = 100;
+// Sweep ack files older than this on startup — covers the race where host
+// writes an ack after the agent's waitForAck timed out.
+const ACK_STALE_MS = 60_000;
+
+interface IpcAck {
+  requestId: string;
+  status: 'success' | 'error';
+  error?: string;
+  completedAt: string;
+}
+
+async function waitForAck(
+  requestId: string,
+  timeoutMs: number = ACK_TIMEOUT_MS,
+): Promise<IpcAck | null> {
+  const ackPath = path.join(ACKS_DIR, `${requestId}.json`);
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    try {
+      const raw = await fsp.readFile(ackPath, 'utf-8');
+      let parsed: IpcAck;
+      try {
+        parsed = JSON.parse(raw) as IpcAck;
+      } catch {
+        // Partial read — retry.
+        await new Promise((resolve) =>
+          setTimeout(resolve, ACK_POLL_INTERVAL_MS),
+        );
+        continue;
+      }
+      try {
+        await fsp.unlink(ackPath);
+      } catch {
+        /* ignore */
+      }
+      return parsed;
+    } catch (err: unknown) {
+      const code = (err as NodeJS.ErrnoException)?.code;
+      if (code !== 'ENOENT') {
+        process.stderr.write(
+          `[ipc-mcp] ack read error (${code}): ${String(err)}\n`,
+        );
+      }
+      await new Promise((resolve) =>
+        setTimeout(resolve, ACK_POLL_INTERVAL_MS),
+      );
+    }
+  }
+  return null;
+}
+
+async function sweepStaleAcks(): Promise<void> {
+  try {
+    const entries = await fsp.readdir(ACKS_DIR);
+    const cutoff = Date.now() - ACK_STALE_MS;
+    await Promise.all(
+      entries
+        .filter((f) => f.endsWith('.json'))
+        .map(async (f) => {
+          const p = path.join(ACKS_DIR, f);
+          try {
+            const stat = await fsp.stat(p);
+            if (stat.mtimeMs < cutoff) await fsp.unlink(p);
+          } catch {
+            /* ignore races */
+          }
+        }),
+    );
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code !== 'ENOENT') {
+      process.stderr.write(`[ipc-mcp] ack sweep error: ${String(err)}\n`);
+    }
+  }
+}
 
 // Context from environment variables (set by the agent runner)
 const chatJid = process.env.NANOCLAW_CHAT_JID!;
 const groupFolder = process.env.NANOCLAW_GROUP_FOLDER!;
 const isMain = process.env.NANOCLAW_IS_MAIN === '1';
 
-function writeIpcFile(dir: string, data: object): string {
+function generateRequestId(): string {
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function writeIpcFile(dir: string, data: object, requestId?: string): string {
   fs.mkdirSync(dir, { recursive: true });
 
-  const filename = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`;
-  const filepath = path.join(dir, filename);
-
-  // Atomic write: temp file then rename
+  const id = requestId || generateRequestId();
+  const filepath = path.join(dir, `${id}.json`);
   const tempPath = `${filepath}.tmp`;
   fs.writeFileSync(tempPath, JSON.stringify(data, null, 2));
   fs.renameSync(tempPath, filepath);
 
-  return filename;
+  return id;
 }
 
 const server = new McpServer({
@@ -52,17 +136,42 @@ server.tool(
       ),
   },
   async (args) => {
+    const requestId = generateRequestId();
     const data: Record<string, string | undefined> = {
       type: 'message',
       chatJid,
       text: args.text,
       sender: args.sender || undefined,
       groupFolder,
+      requestId,
       timestamp: new Date().toISOString(),
     };
 
-    writeIpcFile(MESSAGES_DIR, data);
+    writeIpcFile(MESSAGES_DIR, data, requestId);
 
+    const ack = await waitForAck(requestId);
+    if (!ack) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `Host did not acknowledge delivery within ${ACK_TIMEOUT_MS / 1000}s. The message may still be delivered; check with the user before retrying.`,
+          },
+        ],
+        isError: true,
+      };
+    }
+    if (ack.status === 'error') {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `Message not delivered: ${ack.error || 'unknown error'}`,
+          },
+        ],
+        isError: true,
+      };
+    }
     return { content: [{ type: 'text' as const, text: 'Message sent.' }] };
   },
 );
@@ -503,6 +612,7 @@ Use available_groups.json to find the JID for a group. The folder name must be c
   },
 );
 
-// Start the stdio transport
+await sweepStaleAcks();
+
 const transport = new StdioServerTransport();
 await server.connect(transport);

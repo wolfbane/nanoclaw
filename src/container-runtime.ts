@@ -3,7 +3,6 @@
  * All runtime-specific logic lives here so swapping runtimes means changing one file.
  */
 import { execSync } from 'child_process';
-import fs from 'fs';
 import os from 'os';
 
 import { logger } from './logger.js';
@@ -110,7 +109,9 @@ export function ensureContainerRuntimeRunning(): void {
       console.error(
         '╚════════════════════════════════════════════════════════════════╝\n',
       );
-      throw new Error('Container runtime is required but failed to start');
+      throw new Error('Container runtime is required but failed to start', {
+        cause: err,
+      });
     }
   }
 }

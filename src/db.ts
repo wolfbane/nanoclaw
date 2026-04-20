@@ -7,6 +7,7 @@ import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
 import {
   NewMessage,
+  OutboundSource,
   RegisteredGroup,
   ScheduledTask,
   TaskRunLog,
@@ -82,6 +83,21 @@ function createSchema(database: Database.Database): void {
       container_config TEXT,
       requires_trigger INTEGER DEFAULT 1
     );
+
+    CREATE TABLE IF NOT EXISTS outbound_messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      chat_jid TEXT NOT NULL,
+      channel TEXT NOT NULL,
+      channel_message_ids TEXT,
+      parts INTEGER NOT NULL DEFAULT 1,
+      length INTEGER NOT NULL,
+      parse_mode TEXT,
+      thread_id TEXT,
+      source TEXT NOT NULL,
+      sent_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_outbound_chat_time
+      ON outbound_messages(chat_jid, sent_at);
   `);
 
   // Add context_mode column if it doesn't exist (migration for existing DBs)
@@ -326,6 +342,76 @@ export function storeMessageDirect(msg: {
     msg.is_from_me ? 1 : 0,
     msg.is_bot_message ? 1 : 0,
   );
+}
+
+export interface OutboundMessageRecord {
+  chat_jid: string;
+  channel: string;
+  channel_message_ids?: Array<string | number> | null;
+  parts: number;
+  length: number;
+  parse_mode?: string | null;
+  thread_id?: string | null;
+  source: OutboundSource;
+  sent_at?: string;
+}
+
+/**
+ * Persist an audit row for every outbound message NanoClaw sends. Used to
+ * cross-check delivery ("did that message actually land?") after the fact,
+ * since the channel's transport log isn't always available.
+ */
+export function logOutboundMessage(msg: OutboundMessageRecord): void {
+  db.prepare(
+    `INSERT INTO outbound_messages
+     (chat_jid, channel, channel_message_ids, parts, length, parse_mode, thread_id, source, sent_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    msg.chat_jid,
+    msg.channel,
+    msg.channel_message_ids
+      ? JSON.stringify(msg.channel_message_ids)
+      : null,
+    msg.parts,
+    msg.length,
+    msg.parse_mode ?? null,
+    msg.thread_id ?? null,
+    msg.source,
+    msg.sent_at ?? new Date().toISOString(),
+  );
+}
+
+export interface OutboundMessageRow {
+  id: number;
+  chat_jid: string;
+  channel: string;
+  channel_message_ids: string | null;
+  parts: number;
+  length: number;
+  parse_mode: string | null;
+  thread_id: string | null;
+  source: string;
+  sent_at: string;
+}
+
+/** Most-recent outbound messages, optionally filtered by chat, newest first. */
+export function getRecentOutboundMessages(
+  chatJid?: string,
+  limit = 50,
+): OutboundMessageRow[] {
+  const baseSql = `SELECT id, chat_jid, channel, channel_message_ids, parts, length,
+              parse_mode, thread_id, source, sent_at
+       FROM outbound_messages`;
+  if (chatJid) {
+    return db
+      .prepare(
+        `${baseSql} WHERE chat_jid = ? ORDER BY sent_at DESC LIMIT ?`,
+      )
+      .all(chatJid, limit) as OutboundMessageRow[];
+  }
+  return db
+    .prepare(`${baseSql} ORDER BY sent_at DESC LIMIT ?`)
+    .all(limit) as OutboundMessageRow[];
 }
 
 export function getNewMessages(

@@ -84,10 +84,25 @@ export interface TaskRunLog {
 
 // --- Channel abstraction ---
 
+/** Outbound source tag — recorded in the outbound_messages audit row. */
+export type OutboundSource = 'channel' | 'mcp' | 'task';
+
+export interface SendOptions {
+  threadId?: string;
+  source?: OutboundSource;
+}
+
+/** Shared signature for internal send-message hooks passed into ipc/scheduler deps. */
+export type SendMessageFn = (
+  jid: string,
+  text: string,
+  source: OutboundSource,
+) => Promise<void>;
+
 export interface Channel {
   name: string;
   connect(): Promise<void>;
-  sendMessage(jid: string, text: string): Promise<void>;
+  sendMessage(jid: string, text: string, opts?: SendOptions): Promise<void>;
   isConnected(): boolean;
   ownsJid(jid: string): boolean;
   disconnect(): Promise<void>;

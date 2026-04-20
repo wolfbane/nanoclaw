@@ -19,20 +19,13 @@ import {
 import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { logger } from './logger.js';
-import { RegisteredGroup, ScheduledTask } from './types.js';
+import { RegisteredGroup, ScheduledTask, SendMessageFn } from './types.js';
 
 /**
- * Compute the next run time for a recurring task, anchored to the
- * task's scheduled time rather than Date.now() to prevent cumulative
- * drift on interval-based tasks.
- *
- * Co-authored-by: @community-pr-601
- */
-/**
  * Prepend a dated context header to a scheduled task's prompt so the agent
- * doesn't have to guess the current date/day. Tasks are often written as
- * standing instructions ("every weekday morning, brief me...") and without
- * this, the agent invents a day-of-week from stale session context.
+ * doesn't have to guess the current date/day. Standing instructions like
+ * "every weekday morning, brief me..." would otherwise inherit stale
+ * day-of-week from session context.
  */
 export function prependTaskContext(
   prompt: string,
@@ -49,6 +42,10 @@ export function prependTaskContext(
   return header + prompt;
 }
 
+/**
+ * Next run for a recurring task, anchored to the task's scheduled time rather
+ * than Date.now() to prevent cumulative drift on interval-based tasks.
+ */
 export function computeNextRun(task: ScheduledTask): string | null {
   if (task.schedule_type === 'once') return null;
 
@@ -93,7 +90,7 @@ export interface SchedulerDependencies {
     containerName: string,
     groupFolder: string,
   ) => void;
-  sendMessage: (jid: string, text: string) => Promise<void>;
+  sendMessage: SendMessageFn;
 }
 
 async function runTask(
@@ -125,7 +122,15 @@ async function runTask(
   fs.mkdirSync(groupDir, { recursive: true });
 
   logger.info(
-    { taskId: task.id, group: task.group_folder },
+    {
+      taskId: task.id,
+      group: task.group_folder,
+      scheduleType: task.schedule_type,
+      scheduleValue: task.schedule_value,
+      contextMode: task.context_mode,
+      hasScript: Boolean(task.script),
+      scheduledFor: task.next_run,
+    },
     'Running scheduled task',
   );
 
@@ -209,7 +214,7 @@ async function runTask(
         if (streamedOutput.result) {
           result = streamedOutput.result;
           // Forward result to user (sendMessage handles formatting)
-          await deps.sendMessage(task.chat_jid, streamedOutput.result);
+          await deps.sendMessage(task.chat_jid, streamedOutput.result, 'task');
           scheduleClose();
         }
         if (streamedOutput.status === 'success') {
@@ -230,11 +235,6 @@ async function runTask(
       // Result was already forwarded to the user via the streaming callback above
       result = output.result;
     }
-
-    logger.info(
-      { taskId: task.id, durationMs: Date.now() - startTime },
-      'Task completed',
-    );
   } catch (err) {
     if (closeTimer) clearTimeout(closeTimer);
     error = err instanceof Error ? err.message : String(err);
@@ -242,6 +242,31 @@ async function runTask(
   }
 
   const durationMs = Date.now() - startTime;
+
+  // Infer the run outcome for observability. `script_skipped` is a likely
+  // inference when a task with a script returns null result and no error:
+  // the script's wakeAgent=false path produces exactly that shape.
+  const outcome: 'error' | 'agent_ran' | 'script_skipped' | 'no_output' =
+    error
+      ? 'error'
+      : result
+        ? 'agent_ran'
+        : task.script
+          ? 'script_skipped'
+          : 'no_output';
+
+  if (!error) {
+    logger.info(
+      {
+        taskId: task.id,
+        durationMs,
+        resultLength: result?.length ?? 0,
+        outcome,
+        hasScript: Boolean(task.script),
+      },
+      'Task completed',
+    );
+  }
 
   logTaskRun({
     task_id: task.id,
