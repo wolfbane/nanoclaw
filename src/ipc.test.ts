@@ -5,11 +5,7 @@ import path from 'path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { _initTestDatabase } from './db.js';
-import {
-  IpcDeps,
-  processIpcMessageFile,
-  writeIpcAck,
-} from './ipc.js';
+import { IpcDeps, processIpcMessageFile, writeIpcAck } from './ipc.js';
 import { RegisteredGroup } from './types.js';
 
 // Isolated tmp ipcBase per-test so fs state never leaks between cases.

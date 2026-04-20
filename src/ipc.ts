@@ -143,10 +143,7 @@ export async function processIpcMessageFile(
     }
     fs.unlinkSync(filePath);
   } catch (err) {
-    logger.error(
-      { file, sourceGroup, err },
-      'Error processing IPC message',
-    );
+    logger.error({ file, sourceGroup, err }, 'Error processing IPC message');
     // Best-effort ack so the agent doesn't hang on a malformed request.
     try {
       writeIpcAck(
@@ -181,10 +178,7 @@ function readJsonFiles(
     return fs.readdirSync(dir).filter((f) => f.endsWith('.json'));
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return [];
-    logger.error(
-      { err, sourceGroup, kind },
-      'Error reading IPC directory',
-    );
+    logger.error({ err, sourceGroup, kind }, 'Error reading IPC directory');
     return [];
   }
 }
@@ -244,10 +238,7 @@ export function startIpcWatcher(deps: IpcDeps): void {
           await processTaskIpc(data, sourceGroup, isMain, deps);
           fs.unlinkSync(filePath);
         } catch (err) {
-          logger.error(
-            { file, sourceGroup, err },
-            'Error processing IPC task',
-          );
+          logger.error({ file, sourceGroup, err }, 'Error processing IPC task');
           const errorDir = path.join(ipcBaseDir, 'errors');
           fs.mkdirSync(errorDir, { recursive: true });
           fs.renameSync(

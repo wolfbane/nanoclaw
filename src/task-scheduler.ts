@@ -246,14 +246,13 @@ async function runTask(
   // Infer the run outcome for observability. `script_skipped` is a likely
   // inference when a task with a script returns null result and no error:
   // the script's wakeAgent=false path produces exactly that shape.
-  const outcome: 'error' | 'agent_ran' | 'script_skipped' | 'no_output' =
-    error
-      ? 'error'
-      : result
-        ? 'agent_ran'
-        : task.script
-          ? 'script_skipped'
-          : 'no_output';
+  const outcome: 'error' | 'agent_ran' | 'script_skipped' | 'no_output' = error
+    ? 'error'
+    : result
+      ? 'agent_ran'
+      : task.script
+        ? 'script_skipped'
+        : 'no_output';
 
   if (!error) {
     logger.info(

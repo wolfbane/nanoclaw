@@ -369,9 +369,7 @@ export function logOutboundMessage(msg: OutboundMessageRecord): void {
   ).run(
     msg.chat_jid,
     msg.channel,
-    msg.channel_message_ids
-      ? JSON.stringify(msg.channel_message_ids)
-      : null,
+    msg.channel_message_ids ? JSON.stringify(msg.channel_message_ids) : null,
     msg.parts,
     msg.length,
     msg.parse_mode ?? null,
@@ -404,9 +402,7 @@ export function getRecentOutboundMessages(
        FROM outbound_messages`;
   if (chatJid) {
     return db
-      .prepare(
-        `${baseSql} WHERE chat_jid = ? ORDER BY sent_at DESC LIMIT ?`,
-      )
+      .prepare(`${baseSql} WHERE chat_jid = ? ORDER BY sent_at DESC LIMIT ?`)
       .all(chatJid, limit) as OutboundMessageRow[];
   }
   return db

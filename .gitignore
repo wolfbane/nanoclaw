@@ -36,3 +36,6 @@ groups/global/*
 .nanoclaw/
 
 agents-sdk-docs
+
+# Claude Code local runtime state (locks, session scratch)
+.claude/scheduled_tasks.lock

@@ -21,9 +21,7 @@ import { GroupQueue } from './group-queue.js';
 import { logger } from './logger.js';
 import { findChannel, formatMessages } from './router.js';
 import { isTriggerAllowed, loadSenderAllowlist } from './sender-allowlist.js';
-import {
-  handleSessionCommand,
-} from './session-commands.js';
+import { handleSessionCommand } from './session-commands.js';
 import {
   clearSession,
   getCursor,
