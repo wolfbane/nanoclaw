@@ -22,6 +22,11 @@ export interface TelegramChannelOpts {
   registeredGroups: () => Record<string, RegisteredGroup>;
 }
 
+interface TelegramSendResult {
+  messageId: number;
+  parseMode: 'markdown' | 'plain';
+}
+
 /**
  * Send a message with Telegram Markdown parse mode, falling back to plain text.
  * Claude's output naturally matches Telegram's Markdown v1 format:
@@ -32,16 +37,25 @@ async function sendTelegramMessage(
   chatId: string | number,
   text: string,
   options: { message_thread_id?: number } = {},
-): Promise<void> {
+): Promise<TelegramSendResult> {
   try {
-    await api.sendMessage(chatId, text, {
+    const sent = await api.sendMessage(chatId, text, {
       ...options,
       parse_mode: 'Markdown',
     });
+    return { messageId: sent.message_id, parseMode: 'markdown' };
   } catch (err) {
     // Fallback: send as plain text if Markdown parsing fails
-    logger.debug({ err }, 'Markdown send failed, falling back to plain text');
-    await api.sendMessage(chatId, text, options);
+    logger.warn(
+      {
+        chatId,
+        threadId: options.message_thread_id,
+        err: err instanceof Error ? err.message : String(err),
+      },
+      'Telegram Markdown send failed, falling back to plain text',
+    );
+    const sent = await api.sendMessage(chatId, text, options);
+    return { messageId: sent.message_id, parseMode: 'plain' };
   }
 }
 
@@ -380,24 +394,49 @@ export class TelegramChannel implements Channel {
 
       // Telegram has a 4096 character limit per message — split if needed
       const MAX_LENGTH = 4096;
+      const results: TelegramSendResult[] = [];
       if (text.length <= MAX_LENGTH) {
-        await sendTelegramMessage(this.bot.api, numericId, text, options);
+        results.push(
+          await sendTelegramMessage(this.bot.api, numericId, text, options),
+        );
       } else {
         for (let i = 0; i < text.length; i += MAX_LENGTH) {
-          await sendTelegramMessage(
-            this.bot.api,
-            numericId,
-            text.slice(i, i + MAX_LENGTH),
-            options,
+          results.push(
+            await sendTelegramMessage(
+              this.bot.api,
+              numericId,
+              text.slice(i, i + MAX_LENGTH),
+              options,
+            ),
           );
         }
       }
       logger.info(
-        { jid, length: text.length, threadId },
+        {
+          jid,
+          chatId: numericId,
+          length: text.length,
+          threadId,
+          parts: results.length,
+          messageIds: results.map((r) => r.messageId),
+          parseMode: results.every((r) => r.parseMode === 'markdown')
+            ? 'markdown'
+            : results.every((r) => r.parseMode === 'plain')
+              ? 'plain'
+              : 'mixed',
+        },
         'Telegram message sent',
       );
     } catch (err) {
-      logger.error({ jid, err }, 'Failed to send Telegram message');
+      logger.error(
+        {
+          jid,
+          length: text.length,
+          threadId,
+          err: err instanceof Error ? err.message : String(err),
+        },
+        'Failed to send Telegram message',
+      );
     }
   }
 

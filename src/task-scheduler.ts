@@ -28,6 +28,27 @@ import { RegisteredGroup, ScheduledTask } from './types.js';
  *
  * Co-authored-by: @community-pr-601
  */
+/**
+ * Prepend a dated context header to a scheduled task's prompt so the agent
+ * doesn't have to guess the current date/day. Tasks are often written as
+ * standing instructions ("every weekday morning, brief me...") and without
+ * this, the agent invents a day-of-week from stale session context.
+ */
+export function prependTaskContext(
+  prompt: string,
+  now: Date = new Date(),
+): string {
+  const fmt = new Intl.DateTimeFormat('en-US', {
+    timeZone: TIMEZONE,
+    weekday: 'long',
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+  });
+  const header = `<task_context>\nCurrent date: ${fmt.format(now)} (${TIMEZONE})\n</task_context>\n\n`;
+  return header + prompt;
+}
+
 export function computeNextRun(task: ScheduledTask): string | null {
   if (task.schedule_type === 'once') return null;
 
@@ -173,7 +194,7 @@ async function runTask(
     const output = await runContainerAgent(
       group,
       {
-        prompt: task.prompt,
+        prompt: prependTaskContext(task.prompt),
         sessionId,
         groupFolder: task.group_folder,
         chatJid: task.chat_jid,

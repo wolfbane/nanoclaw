@@ -1,10 +1,26 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
 # NanoClaw
 
-Personal Claude assistant. See [README.md](README.md) for philosophy and setup. See [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) for architecture decisions.
+Personal Claude assistant. See [README.md](README.md) for philosophy and setup. See [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) for architecture decisions. See [docs/SECURITY.md](docs/SECURITY.md) for the trust model.
 
-## Quick Context
+## Architecture
 
-Single Node.js process with skill-based channel system. Channels (WhatsApp, Telegram, Slack, Discord, Gmail) are skills that self-register at startup. Messages route to Claude Agent SDK running in containers (Linux VMs). Each group has isolated filesystem and memory.
+Single Node.js host process that owns channels, storage, scheduling, and a credential proxy. Each incoming message spawns (or pipes into) an Apple Container running the Claude Agent SDK. Per-group filesystem and memory isolation is enforced via mounts, not application-level checks.
+
+**Message flow** (inbound → user reply):
+1. Channel adapter (`src/channels/*.ts`) receives a message, calls `onMessage()`, row written to SQLite.
+2. Message loop in `src/index.ts` polls the DB every 2s. Non-main groups require the trigger word (`@${ASSISTANT_NAME}`); main group bypasses it.
+3. Session slash-commands (e.g. `/compact`) intercepted before agent spawn (`src/session-commands.ts`).
+4. `src/container-runner.ts` spawns a container with per-group mounts and streams stdin JSON. If a container is already active for the group, the message is *piped* in via MessageStream instead of spawning a fresh one.
+5. Agent output is wrapped in `OUTPUT_START_MARKER`/`OUTPUT_END_MARKER`; host parses each JSON chunk, strips `<internal>...</internal>` reasoning blocks in `src/router.ts`, and routes to the channel.
+6. Agent-side IPC (writes to `/workspace/ipc/{messages,tasks}/` → `src/ipc.ts` watcher, polling every 1s) is how the agent sends proactive messages, schedules tasks, or registers groups.
+
+**Main vs non-main group** (the primary privilege boundary): `isMain` set at registration, never mutable via IPC. Main reads the project root (RO), sees all groups/tasks, sends to any JID, can register/sync groups. Non-main is confined to its own folder + global (RO), can only schedule tasks for itself. Enforced in `src/ipc.ts` and `src/container-runner.ts`.
+
+**Credential proxy** (`src/credential-proxy.ts`): Real credentials live in `.env` on the host; containers route outbound HTTPS through the proxy, which injects credentials per-request. Containers never see real tokens. `.env` is shadowed with `/dev/null` inside the container's project-root mount.
 
 ## Key Files
 
@@ -12,53 +28,37 @@ Single Node.js process with skill-based channel system. Channels (WhatsApp, Tele
 |------|---------|
 | `src/index.ts` | Orchestrator: state, message loop, agent invocation |
 | `src/channels/registry.ts` | Channel registry (self-registration at startup) |
-| `src/ipc.ts` | IPC watcher and task processing |
-| `src/router.ts` | Message formatting and outbound routing |
-| `src/config.ts` | Trigger pattern, paths, intervals |
-| `src/container-runner.ts` | Spawns agent containers with mounts |
-| `src/task-scheduler.ts` | Runs scheduled tasks |
+| `src/ipc.ts` | IPC watcher and task/message/group-registration processing |
+| `src/router.ts` | `<internal>` stripping, outbound formatting |
+| `src/config.ts` | Trigger pattern, paths, `NANOCLAW_DATA_DIR` resolution |
+| `src/container-runner.ts` | Spawns agent containers, mounts, MessageStream piping |
+| `src/credential-proxy.ts` | Intercepts outbound requests, injects credentials |
+| `src/task-scheduler.ts` | Cron-driven scheduled task execution |
 | `src/db.ts` | SQLite operations |
-| `groups/{name}/CLAUDE.md` | Per-group memory (isolated) |
-| `container/skills/` | Skills loaded inside agent containers (browser, status, formatting) |
+| `groups/{name}/CLAUDE.md` | Per-group memory (isolated, agent-editable) |
+| `container/agent-runner/` | Agent SDK entrypoint that runs inside the container |
+| `container/skills/` | Claude Code skills synced into each container (`agent-browser`, `capabilities`, channel-specific formatting) |
 
-## Secrets / Credentials / Proxy (OneCLI)
+## Commands
 
-API keys, secret keys, OAuth tokens, and auth credentials are managed by the OneCLI gateway — which handles secret injection into containers at request time, so no keys or tokens are ever passed to containers directly. Run `onecli --help`.
-
-## Skills
-
-Four types of skills exist in NanoClaw. See [CONTRIBUTING.md](CONTRIBUTING.md) for the full taxonomy and guidelines.
-
-- **Feature skills** — merge a `skill/*` branch to add capabilities (e.g. `/add-telegram`, `/add-slack`)
-- **Utility skills** — ship code files alongside SKILL.md (e.g. `/claw`)
-- **Operational skills** — instruction-only workflows, always on `main` (e.g. `/setup`, `/debug`)
-- **Container skills** — loaded inside agent containers at runtime (`container/skills/`)
-
-| Skill | When to Use |
-|-------|-------------|
-| `/setup` | First-time installation, authentication, service configuration |
-| `/customize` | Adding channels, integrations, changing behavior |
-| `/debug` | Container issues, logs, troubleshooting |
-| `/update-nanoclaw` | Bring upstream NanoClaw updates into a customized install |
-| `/init-onecli` | Install OneCLI Agent Vault and migrate `.env` credentials to it |
-| `/qodo-pr-resolver` | Fetch and fix Qodo PR review issues interactively or in batch |
-| `/get-qodo-rules` | Load org- and repo-level coding rules from Qodo before code tasks |
-
-## Contributing
-
-Before creating a PR, adding a skill, or preparing any contribution, you MUST read [CONTRIBUTING.md](CONTRIBUTING.md). It covers accepted change types, the four skill types and their guidelines, SKILL.md format rules, PR requirements, and the pre-submission checklist (searching for existing PRs/issues, testing, description format).
-
-## Development
-
-Run commands directly—don't tell the user to run them.
+Run commands directly — don't tell the user to run them.
 
 ```bash
-npm run dev          # Run with hot reload
-npm run build        # Compile TypeScript
-./container/build.sh # Rebuild agent container
+npm run dev              # Run with hot reload
+npm run build            # Compile TypeScript
+npm run typecheck        # Type-check without emit
+npm run lint             # ESLint
+npm run format:check     # Prettier check (use format:fix to write)
+npm test                 # Vitest (single run)
+npx vitest run path/to/file.test.ts             # Single file
+npx vitest run -t "substring of test name"      # Single test by name
+./container/build.sh     # Rebuild agent container image
 ```
 
+Tests are colocated as `*.test.ts` next to source. Vitest config at `vitest.config.ts`.
+
 Service management:
+
 ```bash
 # macOS (launchd)
 launchctl load ~/Library/LaunchAgents/com.nanoclaw.plist
@@ -71,10 +71,37 @@ systemctl --user stop nanoclaw
 systemctl --user restart nanoclaw
 ```
 
+## Skills
+
+Four types. See [CONTRIBUTING.md](CONTRIBUTING.md) for the full taxonomy and SKILL.md format.
+
+- **Feature skills** — merge a `skill/*` branch to add capabilities (e.g. `/add-telegram`, `/add-slack`)
+- **Utility skills** — ship code files alongside SKILL.md (e.g. `/claw`)
+- **Operational skills** — instruction-only workflows on `main` (e.g. `/setup`, `/debug`)
+- **Container skills** — loaded inside agent containers at runtime (`container/skills/`)
+
+| Skill | When to Use |
+|-------|-------------|
+| `/setup` | First-time installation, authentication, service configuration |
+| `/customize` | Adding channels, integrations, changing behavior |
+| `/debug` | Container issues, logs, troubleshooting |
+| `/update-nanoclaw` | Bring upstream NanoClaw updates into a customized install |
+| `/qodo-pr-resolver` | Fetch and fix Qodo PR review issues |
+| `/get-qodo-rules` | Load org- and repo-level coding rules from Qodo before code tasks |
+
+## Contributing
+
+Before creating a PR, adding a skill, or preparing any contribution, you MUST read [CONTRIBUTING.md](CONTRIBUTING.md). It covers accepted change types, skill guidelines, SKILL.md format, PR requirements, and the pre-submission checklist.
+
+## Gotchas
+
+- **Per-group agent-runner caching**: `src/container-runner.ts` copies `container/agent-runner/src` into `data/sessions/{group}/agent-runner-src/` and only re-copies if missing. After editing the agent runner (or enabling a new MCP server), clear stale copies: `rm -r data/sessions/*/agent-runner-src 2>/dev/null`, then rebuild the container.
+- **Container build cache**: Apple Container's buildkit caches COPY steps aggressively. `--no-cache` alone doesn't invalidate them. For a truly clean rebuild, prune the builder then re-run `./container/build.sh`.
+- **`<internal>` tags**: Agents wrap internal reasoning in `<internal>...</internal>`; `src/router.ts` strips these before outbound. If the agent already called `send_message` directly, wrapping the final result in `<internal>` prevents a duplicate echo.
+- **Multi-instance**: `NANOCLAW_DATA_DIR` overrides where `store/`, `groups/`, `data/`, and IPC live (`src/config.ts`). Two instances can share one checkout but keep separate DBs/sessions by setting different data dirs in their launchd/systemd units.
+- **Cursor rollback semantics**: If a container errors *after* sending any output, the DB cursor is NOT rolled back (prevents duplicate user-visible replies). If it errors *before* output, the cursor rolls back for retry. See `src/index.ts`.
+- **Credentials**: NanoClaw does not use OneCLI. Credentials live in `.env` at the project root; the built-in credential proxy (`src/credential-proxy.ts`) injects them at request time. Apple Container is the only supported runtime.
+
 ## Troubleshooting
 
-**WhatsApp not connecting after upgrade:** WhatsApp is now a separate skill, not bundled in core. Run `/add-whatsapp` (or `npx tsx scripts/apply-skill.ts .claude/skills/add-whatsapp && npm run build`) to install it. Existing auth credentials and groups are preserved.
-
-## Container Build Cache
-
-The container buildkit caches the build context aggressively. `--no-cache` alone does NOT invalidate COPY steps — the builder's volume retains stale files. To force a truly clean rebuild, prune the builder then re-run `./container/build.sh`.
+**WhatsApp not connecting after upgrade:** WhatsApp is a separate skill, not bundled in core. Run `/add-whatsapp` (or `npx tsx scripts/apply-skill.ts .claude/skills/add-whatsapp && npm run build`). Existing auth credentials and groups are preserved.

@@ -60,12 +60,16 @@ Use Slack mrkdwn syntax. Run `/slack-formatting` for the full reference. Key rul
 
 ### WhatsApp/Telegram (folder starts with `whatsapp_` or `telegram_`)
 
-- `*bold*` (single asterisks, NEVER **double**)
-- `_italic_` (underscores)
-- `•` bullet points
+Write standard CommonMark — NanoClaw converts it to the channel's native syntax before sending:
+
+- `**bold**` — rendered as bold
+- `*italic*` — rendered as italic
+- `[text](url)` — rendered inline as `text (url)`
+- `# Heading` / `## Subheading` — rendered as bold
+- `•` or `-` bullet points
 - ` ``` ` code blocks
 
-No `##` headings. No `[links](url)`. No `**double stars**`.
+Do NOT write channel-native syntax directly (e.g. single-asterisk `*bold*`) — the converter treats single asterisks as italic per CommonMark and will mangle bold into italic.
 
 ### Discord (folder starts with `discord_`)
 
