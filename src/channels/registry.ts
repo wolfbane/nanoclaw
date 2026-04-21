@@ -11,9 +11,7 @@ export interface ChannelOpts {
   registeredGroups: () => Record<string, RegisteredGroup>;
 }
 
-export type ChannelFactory = (
-  opts: ChannelOpts,
-) => Channel | Channel[] | null;
+export type ChannelFactory = (opts: ChannelOpts) => Channel | Channel[] | null;
 
 const registry = new Map<string, ChannelFactory>();
 
