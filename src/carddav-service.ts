@@ -2,12 +2,13 @@
  * Host-side CardDAV service for iCloud contacts. Read-only. Same
  * host-side-service pattern as src/caldav-service.ts.
  */
-import { createServer, IncomingMessage, Server, ServerResponse } from 'http';
+import { IncomingMessage, Server, ServerResponse } from 'http';
 import { URL } from 'url';
 
 import { DAVAddressBook, DAVClient, DAVObject } from 'tsdav';
 
 import {
+  createDavHttpServer,
   createDavLoginManager,
   extractDisplayName,
   sendJson,
@@ -27,8 +28,6 @@ interface ContactSummary {
   birthday?: string;
   notes?: string;
 }
-
-const LOGIN_RETRY_INTERVAL_MS = 60_000;
 
 // Minimal vCard 3.0/4.0 parser: handles folded lines (RFC 6350 §3.2) and
 // unescapes \n, \,, \;, \\. Only fields the agent consumes are extracted.
@@ -235,21 +234,18 @@ export async function startCarddavService(
   let cachedAt = 0;
 
   await loginManager.attemptLogin();
-  const retryTimer = setInterval(() => {
-    if (loginManager.getStatus() !== 'ok') void loginManager.attemptLogin();
-  }, LOGIN_RETRY_INTERVAL_MS);
-  retryTimer.unref();
 
   const loadAllContacts = async (force = false): Promise<ContactSummary[]> => {
     const now = Date.now();
     if (!force && cachedContacts && now - cachedAt < CONTACTS_TTL_MS) {
       return cachedContacts;
     }
-    const all: ContactSummary[] = [];
-    for (const book of loginManager.getResources()) {
-      const objects = await client.fetchVCards({ addressBook: book });
-      all.push(...parseContactsFromObjects(objects));
-    }
+    const perBook = await Promise.all(
+      loginManager
+        .getResources()
+        .map((book) => client.fetchVCards({ addressBook: book })),
+    );
+    const all = perBook.flatMap(parseContactsFromObjects);
     all.sort(compareContacts);
     cachedContacts = all;
     cachedAt = now;
@@ -329,35 +325,8 @@ export async function startCarddavService(
     return 404;
   };
 
-  const server = createServer((req, res) => {
-    const method = req.method || 'GET';
-    const path = (req.url || '/').split('?')[0];
-    handle(req, res)
-      .then((status) => {
-        logger.debug({ method, path, status }, 'carddav-service request');
-        if (status === 401 || status === 403) {
-          logger.error(
-            { method, path, status },
-            'CardDAV upstream rejected request — app-specific password may be revoked',
-          );
-        }
-      })
-      .catch((err) => {
-        logger.error(
-          { method, path, err: err instanceof Error ? err.message : err },
-          'carddav-service handler error',
-        );
-        if (!res.headersSent) {
-          sendJson(res, 500, {
-            error: err instanceof Error ? err.message : String(err),
-          });
-        } else {
-          res.end();
-        }
-      });
-  });
-
-  server.on('close', () => clearInterval(retryTimer));
+  const server = createDavHttpServer('CardDAV', handle);
+  server.on('close', () => loginManager.stop());
 
   return new Promise((resolve, reject) => {
     server.listen(port, host, () => {

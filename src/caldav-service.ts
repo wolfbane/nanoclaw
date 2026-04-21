@@ -4,7 +4,7 @@
  * only an internal URL. Used for iCloud because CalDAV returns absolute
  * shard URLs in DAV multistatus XML that a path-prefix proxy can't rewrite.
  */
-import { createServer, IncomingMessage, Server, ServerResponse } from 'http';
+import { IncomingMessage, Server, ServerResponse } from 'http';
 import { URL } from 'url';
 
 import ical, { ICalEventData } from 'ical-generator';
@@ -12,6 +12,7 @@ import nodeIcal from 'node-ical';
 import { DAVCalendar, DAVCalendarObject, DAVClient } from 'tsdav';
 
 import {
+  createDavHttpServer,
   createDavLoginManager,
   extractDisplayName,
   readJsonBody,
@@ -84,8 +85,6 @@ interface UpdateEventBody {
 interface DeleteCalDavObjectBody {
   event_url: string;
 }
-
-const LOGIN_RETRY_INTERVAL_MS = 60_000;
 
 function findCalendarByUrl(
   calendars: DAVCalendar[],
@@ -342,10 +341,6 @@ export async function startCaldavService(
   });
 
   await loginManager.attemptLogin();
-  const retryTimer = setInterval(() => {
-    if (loginManager.getStatus() !== 'ok') void loginManager.attemptLogin();
-  }, LOGIN_RETRY_INTERVAL_MS);
-  retryTimer.unref();
 
   const fetchCalendarList = async (): Promise<DAVCalendar[]> =>
     loginManager.getResources();
@@ -717,35 +712,8 @@ export async function startCaldavService(
     return 404;
   };
 
-  const server = createServer((req, res) => {
-    const method = req.method || 'GET';
-    const path = (req.url || '/').split('?')[0];
-    handle(req, res)
-      .then((status) => {
-        logger.debug({ method, path, status }, 'caldav-service request');
-        if (status === 401 || status === 403) {
-          logger.error(
-            { method, path, status },
-            'CalDAV upstream rejected request — app-specific password may be revoked',
-          );
-        }
-      })
-      .catch((err) => {
-        logger.error(
-          { method, path, err: err instanceof Error ? err.message : err },
-          'caldav-service handler error',
-        );
-        if (!res.headersSent) {
-          sendJson(res, 500, {
-            error: err instanceof Error ? err.message : String(err),
-          });
-        } else {
-          res.end();
-        }
-      });
-  });
-
-  server.on('close', () => clearInterval(retryTimer));
+  const server = createDavHttpServer('CalDAV', handle);
+  server.on('close', () => loginManager.stop());
 
   return new Promise((resolve, reject) => {
     server.listen(port, host, () => {
