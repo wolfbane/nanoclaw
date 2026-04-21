@@ -350,7 +350,7 @@ describe('caldav-service', () => {
     expect(davClientState.lastUpdate?.data).toMatch(/LOCATION:Old Place/);
   });
 
-  it('DELETE /events propagates etag', async () => {
+  it('DELETE /events forwards the url to iCloud', async () => {
     Object.assign(mockEnv, {
       ICLOUD_APPLE_ID: 'u@icloud.com',
       ICLOUD_APP_PASSWORD: 'app',
@@ -358,11 +358,6 @@ describe('caldav-service', () => {
     davClientState.calendars = [
       { url: 'https://p01/main/', displayName: 'Matthew todos' },
     ];
-    davClientState.objects.set('https://p01/main/event-2.ics', {
-      url: 'https://p01/main/event-2.ics',
-      etag: 'etag-delete',
-      data: 'BEGIN:VCALENDAR\nEND:VCALENDAR',
-    });
 
     const port = await start();
     const res = await request(
@@ -376,7 +371,6 @@ describe('caldav-service', () => {
     );
     expect(res.statusCode).toBe(200);
     expect(davClientState.lastDelete?.url).toBe('https://p01/main/event-2.ics');
-    expect(davClientState.lastDelete?.etag).toBe('etag-delete');
   });
 
   it('POST /events returns 502 when iCloud rejects', async () => {

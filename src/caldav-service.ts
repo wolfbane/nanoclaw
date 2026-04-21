@@ -54,7 +54,7 @@ interface CreateReminderBody {
 }
 
 interface UpdateReminderBody {
-  event_url: string;
+  object_url: string;
   title?: string;
   due?: string | null;
   notes?: string;
@@ -80,10 +80,6 @@ interface UpdateEventBody {
   all_day?: boolean;
   location?: string;
   notes?: string;
-}
-
-interface DeleteCalDavObjectBody {
-  event_url: string;
 }
 
 function findCalendarByUrl(
@@ -125,7 +121,6 @@ function buildICalString(data: {
 
 function formatICalUtc(isoOrDate: string | Date): string {
   const d = isoOrDate instanceof Date ? isoOrDate : new Date(isoOrDate);
-  // RFC 5545 UTC form: YYYYMMDDTHHMMSSZ
   return d
     .toISOString()
     .replace(/[-:]/g, '')
@@ -303,7 +298,6 @@ function generateUid(): string {
 }
 
 function eventFilename(uid: string): string {
-  // iCloud accepts any .ics filename; use the UID for recognizability.
   return `${uid.replace(/[^a-zA-Z0-9-]/g, '-')}.ics`;
 }
 
@@ -334,9 +328,6 @@ function buildCaldavHandler({
   client: DAVClient;
   loginManager: DavLoginManager<DAVCalendar[]>;
 }): (req: IncomingMessage, res: ServerResponse) => Promise<number> {
-  const fetchCalendarList = async (): Promise<DAVCalendar[]> =>
-    loginManager.getResources();
-
   return async (req: IncomingMessage, res: ServerResponse): Promise<number> => {
     const requestUrl = new URL(req.url || '/', REQUEST_URL_BASE);
     const pathname = requestUrl.pathname;
@@ -361,8 +352,9 @@ function buildCaldavHandler({
       return 503;
     }
 
+    const calendars = loginManager.getResources();
+
     if (method === 'GET' && pathname === '/calendars') {
-      const calendars = await fetchCalendarList();
       sendJson(res, 200, {
         calendars: calendars.map((c) => ({
           url: c.url,
@@ -384,7 +376,6 @@ function buildCaldavHandler({
         });
         return 400;
       }
-      const calendars = await fetchCalendarList();
       const cal = findCalendarByUrl(calendars, calendarUrl);
       if (!cal) {
         sendJson(res, 404, { error: `calendar not found: ${calendarUrl}` });
@@ -407,7 +398,6 @@ function buildCaldavHandler({
         });
         return 400;
       }
-      const calendars = await fetchCalendarList();
       const cal = findCalendarByUrl(calendars, body.calendar_url);
       if (!cal) {
         sendJson(res, 404, {
@@ -447,7 +437,6 @@ function buildCaldavHandler({
         sendJson(res, 400, { error: 'event_url is required' });
         return 400;
       }
-      const calendars = await fetchCalendarList();
       const cal = findCalendarForObject(calendars, body.event_url);
       if (!cal) {
         sendJson(res, 404, {
@@ -504,7 +493,6 @@ function buildCaldavHandler({
         sendJson(res, 400, { error: 'calendar_url is required' });
         return 400;
       }
-      const calendars = await fetchCalendarList();
       const cal = findCalendarByUrl(calendars, calendarUrl);
       if (!cal) {
         sendJson(res, 404, { error: `calendar not found: ${calendarUrl}` });
@@ -530,7 +518,6 @@ function buildCaldavHandler({
         sendJson(res, 400, { error: 'calendar_url and title are required' });
         return 400;
       }
-      const calendars = await fetchCalendarList();
       const cal = findCalendarByUrl(calendars, body.calendar_url);
       if (!cal) {
         sendJson(res, 404, {
@@ -564,24 +551,23 @@ function buildCaldavHandler({
 
     if (method === 'PATCH' && pathname === '/reminders') {
       const body = await readJsonBody<UpdateReminderBody>(req);
-      if (!body.event_url) {
-        sendJson(res, 400, { error: 'event_url is required' });
+      if (!body.object_url) {
+        sendJson(res, 400, { error: 'object_url is required' });
         return 400;
       }
-      const calendars = await fetchCalendarList();
-      const cal = findCalendarForObject(calendars, body.event_url);
+      const cal = findCalendarForObject(calendars, body.object_url);
       if (!cal) {
         sendJson(res, 404, {
-          error: `no calendar owns url: ${body.event_url}`,
+          error: `no calendar owns url: ${body.object_url}`,
         });
         return 404;
       }
       const existing = await client.fetchCalendarObjects({
         calendar: cal,
-        objectUrls: [body.event_url],
+        objectUrls: [body.object_url],
       });
       if (existing.length === 0) {
-        sendJson(res, 404, { error: `reminder not found: ${body.event_url}` });
+        sendJson(res, 404, { error: `reminder not found: ${body.object_url}` });
         return 404;
       }
       const current = parseRemindersFromObjects(existing)[0];
@@ -595,10 +581,13 @@ function buildCaldavHandler({
         body.completed !== undefined
           ? body.completed
           : current.status === 'COMPLETED';
+      // body.due === null means "clear"; undefined means "leave unchanged".
+      const mergedDue =
+        body.due === null ? undefined : (body.due ?? current.due);
       const iCalString = buildVTodoICalString({
         uid: current.uid,
         title: body.title ?? current.summary,
-        due: body.due === null ? undefined : (body.due ?? current.due),
+        due: mergedDue,
         notes: body.notes ?? current.notes,
         priority:
           body.priority !== undefined ? body.priority : current.priority,
@@ -607,7 +596,7 @@ function buildCaldavHandler({
       });
       const response = await client.updateCalendarObject({
         calendarObject: {
-          url: body.event_url,
+          url: body.object_url,
           etag: existing[0].etag,
           data: iCalString,
         },
@@ -626,26 +615,15 @@ function buildCaldavHandler({
       method === 'DELETE' &&
       (pathname === '/events' || pathname === '/reminders')
     ) {
-      const body = await readJsonBody<DeleteCalDavObjectBody>(req);
-      if (!body.event_url) {
-        sendJson(res, 400, { error: 'event_url is required' });
+      const bodyKey = pathname === '/events' ? 'event_url' : 'object_url';
+      const body = await readJsonBody<Record<string, string>>(req);
+      const url = body[bodyKey];
+      if (!url) {
+        sendJson(res, 400, { error: `${bodyKey} is required` });
         return 400;
       }
-      const calendars = await fetchCalendarList();
-      const cal = findCalendarForObject(calendars, body.event_url);
-      if (!cal) {
-        sendJson(res, 404, {
-          error: `no calendar owns url: ${body.event_url}`,
-        });
-        return 404;
-      }
-      const existing = await client.fetchCalendarObjects({
-        calendar: cal,
-        objectUrls: [body.event_url],
-      });
-      const etag = existing[0]?.etag;
       const response = await client.deleteCalendarObject({
-        calendarObject: { url: body.event_url, etag, data: '' },
+        calendarObject: { url, data: '' },
       });
       if (!response.ok) {
         sendJson(res, 502, {

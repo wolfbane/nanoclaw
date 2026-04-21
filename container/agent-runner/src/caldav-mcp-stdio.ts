@@ -170,17 +170,16 @@ server.tool(
 
 server.tool(
   'update_reminder',
-  'Update fields on a reminder, or mark it complete/incomplete via the completed flag. Omitted fields stay unchanged.',
+  'Update fields on a reminder, or mark it complete/incomplete via the completed flag. Omitted fields stay unchanged. Pass due_iso: null to remove an existing due date.',
   {
-    event_url: z
+    object_url: z
       .string()
       .describe('Reminder URL returned by create_reminder or list_reminders'),
     title: z.string().optional(),
-    due_iso: isoTimestamp.optional(),
-    clear_due: z
-      .boolean()
+    due_iso: isoTimestamp
+      .nullable()
       .optional()
-      .describe('Set to true to remove an existing due date'),
+      .describe('ISO-8601 due date/time, or null to clear'),
     notes: z.string().optional(),
     priority: z.number().int().min(0).max(9).optional(),
     completed: z
@@ -191,9 +190,9 @@ server.tool(
   async (args) =>
     call('PATCH', '/reminders', {
       body: {
-        event_url: args.event_url,
+        object_url: args.object_url,
         title: args.title,
-        due: args.clear_due ? null : args.due_iso,
+        due: args.due_iso,
         notes: args.notes,
         priority: args.priority,
         completed: args.completed,
@@ -205,10 +204,10 @@ server.tool(
   'delete_reminder',
   'Delete a reminder. Only call this after the user has explicitly confirmed deletion.',
   {
-    event_url: z.string().describe('Reminder URL to delete'),
+    object_url: z.string().describe('Reminder URL to delete'),
   },
   async (args) =>
-    call('DELETE', '/reminders', { body: { event_url: args.event_url } }),
+    call('DELETE', '/reminders', { body: { object_url: args.object_url } }),
 );
 
 const transport = new StdioServerTransport();

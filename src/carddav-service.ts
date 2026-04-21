@@ -86,20 +86,22 @@ function pickType(params: Record<string, string>): string | undefined {
 }
 
 function parseVCard(raw: string): ContactSummary | null {
-  const lines = unfoldLines(raw);
-  if (!lines.some((l) => l.trim().toUpperCase() === 'BEGIN:VCARD')) return null;
-
   const contact: ContactSummary = {
     url: '',
     full_name: '',
     phones: [],
     emails: [],
   };
+  let sawBegin = false;
 
-  for (const line of lines) {
+  for (const line of unfoldLines(raw)) {
     const parsed = parseVCardLine(line);
     if (!parsed) continue;
     const { key, params, value } = parsed;
+    if (key === 'BEGIN' && value.toUpperCase() === 'VCARD') {
+      sawBegin = true;
+      continue;
+    }
     const decoded = unescapeVCardText(value);
     switch (key) {
       case 'FN':
@@ -138,6 +140,7 @@ function parseVCard(raw: string): ContactSummary | null {
     }
   }
 
+  if (!sawBegin) return null;
   return contact.full_name || contact.phones.length || contact.emails.length
     ? contact
     : null;
@@ -227,22 +230,28 @@ function buildCarddavHandler({
 }): (req: IncomingMessage, res: ServerResponse) => Promise<number> {
   let cachedContacts: ContactSummary[] | null = null;
   let cachedAt = 0;
+  let inFlight: Promise<ContactSummary[]> | null = null;
 
-  const loadAllContacts = async (force = false): Promise<ContactSummary[]> => {
-    const now = Date.now();
-    if (!force && cachedContacts && now - cachedAt < CONTACTS_TTL_MS) {
+  const loadAllContacts = async (): Promise<ContactSummary[]> => {
+    if (cachedContacts && Date.now() - cachedAt < CONTACTS_TTL_MS) {
       return cachedContacts;
     }
-    const perBook = await Promise.all(
-      loginManager
-        .getResources()
-        .map((book) => client.fetchVCards({ addressBook: book })),
-    );
-    const all = perBook.flatMap(parseContactsFromObjects);
-    all.sort(compareContacts);
-    cachedContacts = all;
-    cachedAt = now;
-    return all;
+    if (inFlight) return inFlight;
+    inFlight = (async () => {
+      const perBook = await Promise.all(
+        loginManager
+          .getResources()
+          .map((book) => client.fetchVCards({ addressBook: book })),
+      );
+      const all = perBook.flatMap(parseContactsFromObjects);
+      all.sort(compareContacts);
+      cachedContacts = all;
+      cachedAt = Date.now();
+      return all;
+    })().finally(() => {
+      inFlight = null;
+    });
+    return inFlight;
   };
 
   return async (req: IncomingMessage, res: ServerResponse): Promise<number> => {
