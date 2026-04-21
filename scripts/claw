@@ -202,6 +202,14 @@ def run_container(runtime: str, image: str, payload: dict,
     # Pass env vars that downstream tools in the container may need.
     # CENTS_HOME redirects ~/.cents lookups to the mounted cents-data dir.
     cmd += ["-e", "CENTS_HOME=/workspace/extra/cents-data"]
+    # Point the CalDAV MCP at the host-side service. Matches what
+    # container-runner.ts injects for the service path — without this the
+    # MCP returns "CalDAV not configured on the host" even when the service
+    # is healthy. 192.168.64.1 is Apple Container's bridge gateway; port
+    # matches CALDAV_SERVICE_PORT (default 3002). Override with
+    # NANOCLAW_CALDAV_SERVICE_URL in your shell if the service runs elsewhere.
+    caldav_url = os.environ.get("NANOCLAW_CALDAV_SERVICE_URL", "http://192.168.64.1:3002")
+    cmd += ["-e", f"NANOCLAW_CALDAV_SERVICE_URL={caldav_url}"]
 
     if folder:
         for host, container, readonly in build_mounts(folder, is_main, container_config):
