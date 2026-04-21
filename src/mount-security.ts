@@ -140,9 +140,10 @@ function getRealPath(p: string): string | null {
 }
 
 /**
- * Check if any path component exactly matches a blocked name.
- * Exact-match avoids rejecting legitimate paths like
- * `/Users/foo/credentials-docs/` or `/Users/foo/.environment/`.
+ * Match a path component exactly, or as a base name followed by an
+ * extension (e.g. `id_rsa` matches `id_rsa.pub`). Avoids the substring
+ * over-blocking that rejected legitimate paths like `/.environment/` or
+ * `/credentials-docs/` while still catching keypair variants.
  */
 function matchesBlockedPattern(
   realPath: string,
@@ -150,7 +151,10 @@ function matchesBlockedPattern(
 ): string | null {
   const pathParts = realPath.split(path.sep);
   for (const pattern of blockedPatterns) {
-    if (pathParts.includes(pattern)) return pattern;
+    const prefix = pattern + '.';
+    for (const part of pathParts) {
+      if (part === pattern || part.startsWith(prefix)) return pattern;
+    }
   }
   return null;
 }
