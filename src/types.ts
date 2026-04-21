@@ -23,6 +23,11 @@ export interface AllowedRoot {
   path: string;
   // Whether read-write mounts are allowed under this root
   allowReadWrite: boolean;
+  // Optional per-root exemption from MountAllowlist.nonMainReadOnly.
+  // When true, non-main groups can still mount this specific root read-write
+  // (subject to allowReadWrite). Lets users whitelist tool directories that
+  // need to persist state without relaxing the global non-main default.
+  allowNonMainReadWrite?: boolean;
   // Optional description for documentation
   description?: string;
 }

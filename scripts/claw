@@ -98,10 +98,22 @@ def read_secrets(env_file: Path) -> dict:
 def get_groups(db: Path) -> list[dict]:
     conn = sqlite3.connect(db)
     rows = conn.execute(
-        "SELECT jid, name, folder, is_main FROM registered_groups ORDER BY name"
+        "SELECT jid, name, folder, is_main, container_config FROM registered_groups ORDER BY name"
     ).fetchall()
     conn.close()
-    return [{"jid": r[0], "name": r[1], "folder": r[2], "is_main": bool(r[3])} for r in rows]
+    groups = []
+    for r in rows:
+        cfg = {}
+        if r[4]:
+            try:
+                cfg = json.loads(r[4])
+            except json.JSONDecodeError:
+                cfg = {}
+        groups.append({
+            "jid": r[0], "name": r[1], "folder": r[2],
+            "is_main": bool(r[3]), "container_config": cfg,
+        })
+    return groups
 
 
 def find_group(groups: list[dict], query: str) -> dict | None:
@@ -120,7 +132,7 @@ def find_group(groups: list[dict], query: str) -> dict | None:
     return None
 
 
-def build_mounts(folder: str, is_main: bool) -> list[tuple[str, str, bool]]:
+def build_mounts(folder: str, is_main: bool, container_config: dict | None = None) -> list[tuple[str, str, bool]]:
     """Return list of (host_path, container_path, readonly) tuples."""
     groups_dir  = NANOCLAW_DIR / "groups"
     data_dir    = NANOCLAW_DIR / "data"
@@ -148,12 +160,26 @@ def build_mounts(folder: str, is_main: bool) -> list[tuple[str, str, bool]]:
     mounts.append((str(ipc_dir),             "/workspace/ipc",      False))
     if agent_runner_src.exists():
         mounts.append((str(agent_runner_src), "/app/src",           False))
+
+    # Additional mounts from the group's container_config (surface at /workspace/extra/<name>).
+    # Claw trusts the DB here — consistency with nanoclaw's runtime validation is the user's
+    # responsibility when editing container_config directly.
+    for m in (container_config or {}).get("additionalMounts", []) or []:
+        host = Path(str(m.get("hostPath", ""))).expanduser()
+        name = str(m.get("containerPath", "")).strip("/")
+        if not host or not name:
+            continue
+        if not host.exists():
+            dbg(f"skipping additional mount (host path missing): {host}")
+            continue
+        mounts.append((str(host), f"/workspace/extra/{name}", bool(m.get("readonly", True))))
     return mounts
 
 
 def run_container(runtime: str, image: str, payload: dict,
                   folder: str | None = None, is_main: bool = False,
-                  timeout: int = 300, env_file: Path | None = None) -> None:
+                  timeout: int = 300, env_file: Path | None = None,
+                  container_config: dict | None = None) -> None:
     cmd = [runtime, "run", "-i", "--rm"]
 
     # Inject credentials from .env as env vars
@@ -173,8 +199,12 @@ def run_container(runtime: str, image: str, payload: dict,
     else:
         cmd += ["--user", f"{host_uid}:{host_gid}", "-e", "HOME=/home/node"]
 
+    # Pass env vars that downstream tools in the container may need.
+    # CENTS_HOME redirects ~/.cents lookups to the mounted cents-data dir.
+    cmd += ["-e", "CENTS_HOME=/workspace/extra/cents-data"]
+
     if folder:
-        for host, container, readonly in build_mounts(folder, is_main):
+        for host, container, readonly in build_mounts(folder, is_main, container_config):
             if readonly:
                 cmd += ["--mount", f"type=bind,source={host},target={container},readonly"]
             else:
@@ -343,6 +373,7 @@ def main():
     group_name = None
     group_folder = None
     is_main = False
+    container_config: dict = {}
 
     if args.group:
         g = find_group(groups, args.group)
@@ -352,6 +383,7 @@ def main():
         group_name = g["name"]
         group_folder = g["folder"]
         is_main = g["is_main"]
+        container_config = g.get("container_config", {}) or {}
     elif not jid:
         # Default: main group
         mains = [g for g in groups if g["is_main"]]
@@ -360,8 +392,16 @@ def main():
             group_name = mains[0]["name"]
             group_folder = mains[0]["folder"]
             is_main = True
+            container_config = mains[0].get("container_config", {}) or {}
         else:
             sys.exit("error: no group specified and no main group found. Use -g or -j.")
+    else:
+        g = next((x for x in groups if x["jid"] == jid), None)
+        if g:
+            group_name = g["name"]
+            group_folder = g["folder"]
+            is_main = g["is_main"]
+            container_config = g.get("container_config", {}) or {}
 
     runtime = detect_runtime(args.runtime)
     secrets = read_secrets(ENV_FILE)
@@ -384,7 +424,8 @@ def main():
     print(f"[{group_name or jid}] running via {runtime}...", file=sys.stderr)
     run_container(runtime, args.image, payload,
                   folder=group_folder, is_main=is_main,
-                  timeout=args.timeout)
+                  timeout=args.timeout,
+                  container_config=container_config)
 
 
 if __name__ == "__main__":

@@ -85,6 +85,50 @@ Standard Markdown works: `**bold**`, `*italic*`, `[links](url)`, `# headings`.
 
 ---
 
+## Calendar (iCloud)
+
+You have read/write access to Matthew's iCloud calendars via `mcp__caldav__*`. Always call `mcp__caldav__list_calendars` at the start of a calendar task to get live URLs — do not hardcode them.
+
+The roster:
+
+- **Inbox** — Matthew's actionable inbox for you. Every entry here is a task he wants you to act on (e.g. "Book haircut", "Make reservation for 4"). Treat Telegram messages and Inbox entries as equivalent input channels.
+- **Calendar** — default personal calendar (events)
+- **Family** — shared with spouse; writes are visible to both people. **Always confirm before writing here.**
+- **Shared** — additional shared calendar. Confirm before writing.
+- **Reminders ⚠️** — iCloud Reminders list; read-only in practice, leave alone unless asked.
+
+### Rules
+
+- **Confirm before writing to any calendar.** Reads are free; writes require Matthew's OK unless he's explicitly pre-authorized a specific action (e.g. "go ahead and book").
+- **ISO-8601 with timezone on every timestamp.** The MCP rejects naked local times. Use `Z` (UTC) or an offset like `-04:00`. If Matthew says "at 3pm", resolve it against his timezone (`TZ` env var inside your container) before calling the tool.
+- **When resolving Inbox items**, either delete the event (if the task is fully done and the record adds no value) or append `✓ done: <what happened>` to the event notes and leave it. Prefer appending when the outcome might matter later (confirmation numbers, who you spoke to).
+- **Don't silently reshuffle** existing events. Propose moves; let Matthew confirm.
+
+### Notification policy (global — tunable by editing this file)
+
+This is the default for how far ahead you surface upcoming items in the morning brief / evening summary. One policy for all calendars — no per-event overrides unless Matthew asks.
+
+- **Appointments** (medical, meetings, anything with a fixed external commitment): flag **T-2 days** and **day-of**.
+- **Travel / vacation / trips**: countdown starts at **T-4 weeks** (weekly mentions), tightens to daily at **T-1 week**, day-of is a full brief.
+- **Focus blocks / personal time**: surface day-of only; no advance reminder.
+- **Inbox items**: every morning brief lists anything open; every evening summary lists anything still open plus anything resolved that day.
+- **Birthdays / annual events**: T-7 days and day-of.
+
+If Matthew asks you to tweak any of this — "remind me earlier about dentist stuff", "I don't need travel countdowns that early" — edit this section. It's the source of truth for your behavior.
+
+### Morning brief & evening summary
+
+When a scheduled task wakes you for a morning brief (~7am) or evening summary (~9pm):
+
+1. Pull the next 24 hours from `Calendar` + `Family` + `Shared`.
+2. Pull the next 7 days and apply the notification policy above to pick what to surface (don't dump the whole week — just what the policy says is due for attention).
+3. List all open Inbox items.
+4. In the evening summary, also list Inbox items resolved today.
+5. **Investments** — if `cents` is available at `/workspace/extra/cents`, run `UV_PROJECT_ENVIRONMENT=/tmp/cents-venv uv run --project /workspace/extra/cents cents scan` then the same prefix with `cents alert list`. (The `cents` mount is read-only here, so uv cannot create `.venv` in-tree — `UV_PROJECT_ENVIRONMENT` redirects it to a writable path.) Include only items that cross a threshold or triggered an alert — skip the full position table. If nothing noteworthy, omit this section entirely rather than padding. Investment data belongs to Evan; you're just reporting.
+6. Keep it tight. Bullet points. Matthew reads these on his phone.
+
+---
+
 ## Task Scripts
 
 For any recurring task, use `schedule_task`. Frequent agent invocations — especially multiple times a day — consume API credits and can risk account restrictions. If a simple check can determine whether action is needed, add a `script` — it runs first, and the agent is only called when the check passes. This keeps invocations to a minimum.

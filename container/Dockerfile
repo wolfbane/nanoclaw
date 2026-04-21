@@ -27,8 +27,10 @@ RUN apt-get update && apt-get install -y \
     python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
-# Install uv (fast Python package manager) system-wide
-RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local sh
+# Install uv (fast Python package manager) system-wide.
+# UV_INSTALL_DIR is the literal destination — must be /usr/local/bin, not /usr/local
+# (otherwise binaries land at /usr/local/uv, outside PATH).
+RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin INSTALLER_NO_MODIFY_PATH=1 sh
 
 # Set Chromium path for agent-browser
 ENV AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium

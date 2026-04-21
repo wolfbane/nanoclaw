@@ -266,6 +266,11 @@ function buildContainerArgs(
 ): string[] {
   const args: string[] = ['run', '-i', '--rm', '--name', containerName];
 
+  // Apple Container's default VM allocation (1 GiB) is tight for the agent
+  // runner under load and results in exit 137 (guest-kernel OOM) when the
+  // host is also under memory pressure. 2 GiB gives comfortable headroom.
+  args.push('--memory', '2G');
+
   // Pass host timezone so container's local time matches the user's
   args.push('-e', `TZ=${TIMEZONE}`);
 
@@ -281,6 +286,12 @@ function buildContainerArgs(
     '-e',
     `NANOCLAW_CALDAV_SERVICE_URL=http://${CONTAINER_HOST_GATEWAY}:${CALDAV_SERVICE_PORT}`,
   );
+
+  // Redirect cents's config/data dir to a mounted path. Only has effect
+  // when a `cents-data` additionalMount is present for the group (cents
+  // uses it via the CENTS_HOME env var added in its paths module); otherwise
+  // a no-op since cents isn't invoked.
+  args.push('-e', 'CENTS_HOME=/workspace/extra/cents-data');
 
   // Mirror the host's auth method with a placeholder value.
   // API key mode: SDK sends x-api-key, proxy replaces with real key.
