@@ -124,7 +124,7 @@ When a scheduled task wakes you for a morning brief (~7am) or evening summary (~
 2. Pull the next 7 days and apply the notification policy above to pick what to surface (don't dump the whole week — just what the policy says is due for attention).
 3. List all open Inbox items.
 4. In the evening summary, also list Inbox items resolved today.
-5. **Investments** — if `cents` is available at `/workspace/extra/cents`, run `UV_PROJECT_ENVIRONMENT=/tmp/cents-venv uv run --project /workspace/extra/cents --extra broker cents scan` then the same prefix with `cents alert list`. (The `cents` mount is read-only, so `UV_PROJECT_ENVIRONMENT` redirects the venv to a writable path. `--extra broker` is required — `alpaca-py` is an optional dep and scan crashes without it.) Include only items that cross a threshold or triggered an alert — skip the full position table. If nothing noteworthy, omit this section entirely rather than padding. Investment data belongs to Evan; you're just reporting.
+5. **Investments** — if `cents` is available at `/workspace/extra/cents`, run `UV_PROJECT_ENVIRONMENT=/tmp/cents-venv uv run --project /workspace/extra/cents --extra broker cents alert list`. Report only items crossing the significance threshold (|Δconviction| ≥ 5); otherwise omit the section. **Do not run `cents scan` here** — scan mutates the alert store and your cents-data mount is read-only. Fresh analysis is Evan's job in the business group; you're just surfacing what he's already generated. Investment data belongs to Evan.
 6. Keep it tight. Bullet points. Matthew reads these on his phone.
 
 ---
