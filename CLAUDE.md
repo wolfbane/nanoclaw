@@ -38,11 +38,13 @@ Single Node.js host process that owns channels, storage, scheduling, and a crede
 | `src/container-runner.ts` | Spawns agent containers, mounts, MessageStream piping |
 | `src/credential-proxy.ts` | Intercepts outbound requests, injects credentials |
 | `src/caldav-service.ts` | Host-side CalDAV service (iCloud calendar events + reminders/VTODOs) |
+| `src/carddav-service.ts` | Host-side CardDAV service (iCloud contacts, read-only) |
 | `src/task-scheduler.ts` | Cron-driven scheduled task execution |
 | `src/db.ts` | SQLite operations |
 | `groups/{name}/CLAUDE.md` | Per-group memory (isolated, agent-editable) |
 | `container/agent-runner/` | Agent SDK entrypoint that runs inside the container |
 | `container/agent-runner/src/caldav-mcp-stdio.ts` | Container MCP forwarder for CalDAV (wraps the host service) |
+| `container/agent-runner/src/carddav-mcp-stdio.ts` | Container MCP forwarder for CardDAV (wraps the host service) |
 | `container/skills/` | Claude Code skills synced into each container (`agent-browser`, `capabilities`, channel-specific formatting) |
 
 ## Commands

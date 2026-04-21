@@ -8,6 +8,7 @@ import path from 'path';
 
 import {
   CALDAV_SERVICE_PORT,
+  CARDDAV_SERVICE_PORT,
   CONTAINER_IMAGE,
   CONTAINER_MAX_OUTPUT_SIZE,
   CONTAINER_TIMEOUT,
@@ -280,11 +281,15 @@ function buildContainerArgs(
     `ANTHROPIC_BASE_URL=http://${CONTAINER_HOST_GATEWAY}:${CREDENTIAL_PROXY_PORT}`,
   );
 
-  // Point the container's CalDAV MCP at the host-side service.
-  // No credentials travel on this URL — just JSON RPC over the bridge network.
+  // Point the container's CalDAV / CardDAV MCPs at the host-side services.
+  // No credentials travel on these URLs — just JSON RPC over the bridge network.
   args.push(
     '-e',
     `NANOCLAW_CALDAV_SERVICE_URL=http://${CONTAINER_HOST_GATEWAY}:${CALDAV_SERVICE_PORT}`,
+  );
+  args.push(
+    '-e',
+    `NANOCLAW_CARDDAV_SERVICE_URL=http://${CONTAINER_HOST_GATEWAY}:${CARDDAV_SERVICE_PORT}`,
   );
 
   // Redirect cents's config/data dir to a mounted path. Only has effect

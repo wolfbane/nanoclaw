@@ -4,6 +4,7 @@ import path from 'path';
 import {
   ASSISTANT_NAME,
   CALDAV_SERVICE_PORT,
+  CARDDAV_SERVICE_PORT,
   CREDENTIAL_PROXY_PORT,
   DEFAULT_TRIGGER,
   getTriggerPattern,
@@ -13,6 +14,7 @@ import {
   TIMEZONE,
 } from './config.js';
 import { startCaldavService } from './caldav-service.js';
+import { startCarddavService } from './carddav-service.js';
 import { startCredentialProxy } from './credential-proxy.js';
 import './channels/index.js';
 import {
@@ -356,11 +358,28 @@ async function main(): Promise<void> {
     );
   }
 
+  // Start CardDAV service for iCloud contacts. Shares credentials with CalDAV
+  // and fails closed the same way when they're missing.
+  let carddavServer: Awaited<ReturnType<typeof startCarddavService>> | null =
+    null;
+  try {
+    carddavServer = await startCarddavService(
+      CARDDAV_SERVICE_PORT,
+      PROXY_BIND_HOST,
+    );
+  } catch (err) {
+    logger.error(
+      { err },
+      'CardDAV service failed to start — continuing without it',
+    );
+  }
+
   // Graceful shutdown handlers
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutdown signal received');
     proxyServer.close();
     caldavServer?.close();
+    carddavServer?.close();
     await queue.shutdown(10000);
     for (const ch of channels) await ch.disconnect();
     process.exit(0);

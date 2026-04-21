@@ -376,6 +376,7 @@ async function runQuery(
   sessionId: string | undefined,
   mcpServerPath: string,
   caldavMcpServerPath: string,
+  carddavMcpServerPath: string,
   containerInput: ContainerInput,
   sdkEnv: Record<string, string | undefined>,
   resumeAt?: string,
@@ -471,6 +472,7 @@ async function runQuery(
         'NotebookEdit',
         'mcp__nanoclaw__*',
         'mcp__caldav__*',
+        'mcp__carddav__*',
       ],
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
@@ -493,6 +495,14 @@ async function runQuery(
             NANOCLAW_CALDAV_SERVICE_URL:
               process.env.NANOCLAW_CALDAV_SERVICE_URL || '',
             TZ: process.env.TZ || 'UTC',
+          },
+        },
+        carddav: {
+          command: 'node',
+          args: [carddavMcpServerPath],
+          env: {
+            NANOCLAW_CARDDAV_SERVICE_URL:
+              process.env.NANOCLAW_CARDDAV_SERVICE_URL || '',
           },
         },
       },
@@ -642,6 +652,7 @@ async function main(): Promise<void> {
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   const mcpServerPath = path.join(__dirname, 'ipc-mcp-stdio.js');
   const caldavMcpServerPath = path.join(__dirname, 'caldav-mcp-stdio.js');
+  const carddavMcpServerPath = path.join(__dirname, 'carddav-mcp-stdio.js');
 
   let sessionId = containerInput.sessionId;
   fs.mkdirSync(IPC_INPUT_DIR, { recursive: true });
@@ -799,6 +810,7 @@ async function main(): Promise<void> {
         sessionId,
         mcpServerPath,
         caldavMcpServerPath,
+        carddavMcpServerPath,
         containerInput,
         sdkEnv,
         resumeAt,

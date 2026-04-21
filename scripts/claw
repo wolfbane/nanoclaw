@@ -210,6 +210,10 @@ def run_container(runtime: str, image: str, payload: dict,
     # NANOCLAW_CALDAV_SERVICE_URL in your shell if the service runs elsewhere.
     caldav_url = os.environ.get("NANOCLAW_CALDAV_SERVICE_URL", "http://192.168.64.1:3002")
     cmd += ["-e", f"NANOCLAW_CALDAV_SERVICE_URL={caldav_url}"]
+    # Sibling of CalDAV; host-side CardDAV (iCloud contacts) service, port 3003
+    # by default. See src/carddav-service.ts.
+    carddav_url = os.environ.get("NANOCLAW_CARDDAV_SERVICE_URL", "http://192.168.64.1:3003")
+    cmd += ["-e", f"NANOCLAW_CARDDAV_SERVICE_URL={carddav_url}"]
 
     if folder:
         for host, container, readonly in build_mounts(folder, is_main, container_config):

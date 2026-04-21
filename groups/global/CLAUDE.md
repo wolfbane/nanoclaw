@@ -85,6 +85,18 @@ Standard Markdown works: `**bold**`, `*italic*`, `[links](url)`, `# headings`.
 
 ---
 
+## Contacts (iCloud)
+
+Read-only access to Matthew's iCloud Contacts via `mcp__carddav__*`:
+
+- `mcp__carddav__search_contacts({q, limit})` — substring match across name, organization, notes, email; phone match strips formatting and needs ≥4 digits. Omit `q` to dump the book (paginate with `limit`).
+- `mcp__carddav__list_address_books` — usually one book, occasionally a shared family book.
+- `mcp__carddav__refresh_contacts` — force re-fetch (cache TTL is 5 min) if you just added a contact elsewhere.
+
+Don't proactively include contact data in messages unless Matthew asked for it — these are other people's PII, not yours to broadcast.
+
+---
+
 ## Calendar (iCloud)
 
 You have read/write access to Matthew's iCloud calendars via `mcp__caldav__*`. Always call `mcp__caldav__list_calendars` at the start of a calendar task to get live URLs — do not hardcode them.
