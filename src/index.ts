@@ -358,8 +358,6 @@ async function main(): Promise<void> {
     );
   }
 
-  // Start CardDAV service for iCloud contacts. Shares credentials with CalDAV
-  // and fails closed the same way when they're missing.
   let carddavServer: Awaited<ReturnType<typeof startCarddavService>> | null =
     null;
   try {

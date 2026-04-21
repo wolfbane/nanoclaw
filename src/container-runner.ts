@@ -281,8 +281,7 @@ function buildContainerArgs(
     `ANTHROPIC_BASE_URL=http://${CONTAINER_HOST_GATEWAY}:${CREDENTIAL_PROXY_PORT}`,
   );
 
-  // Point the container's CalDAV / CardDAV MCPs at the host-side services.
-  // No credentials travel on these URLs — just JSON RPC over the bridge network.
+  // No credentials travel on these URLs — the host services inject them.
   args.push(
     '-e',
     `NANOCLAW_CALDAV_SERVICE_URL=http://${CONTAINER_HOST_GATEWAY}:${CALDAV_SERVICE_PORT}`,

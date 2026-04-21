@@ -1,95 +1,23 @@
 /**
- * Stdio MCP server for CalDAV (iCloud calendar access).
- *
- * The agent never talks to iCloud directly. This MCP is a thin forwarder
- * that translates Zod-validated tool calls into HTTP requests against the
- * host-side CalDAV service (src/caldav-service.ts). Credentials live on the
- * host; this process sees only NANOCLAW_CALDAV_SERVICE_URL.
+ * Stdio MCP server for CalDAV. Thin fetch forwarder to the host-side
+ * service (src/caldav-service.ts); credentials live on the host.
  */
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 
-const serviceUrl = process.env.NANOCLAW_CALDAV_SERVICE_URL || '';
+import { makeDavCaller } from './dav-http-client.js';
 
-const isoTimestamp = z
-  .string()
-  .refine((v) => /Z$|[+-]\d{2}:\d{2}$/.test(v), {
-    message:
-      'Timestamp must be ISO-8601 with explicit timezone (e.g. "2026-04-20T10:00:00-04:00" or "...Z"). Naked local times are rejected.',
-  });
+const call = makeDavCaller(
+  'CalDAV',
+  process.env.NANOCLAW_CALDAV_SERVICE_URL || '',
+);
 
-function errorResult(text: string) {
-  return {
-    content: [{ type: 'text' as const, text }],
-    isError: true,
-  };
-}
-
-function successResult(body: unknown) {
-  return {
-    content: [
-      {
-        type: 'text' as const,
-        text: typeof body === 'string' ? body : JSON.stringify(body, null, 2),
-      },
-    ],
-  };
-}
-
-async function call(
-  method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
-  path: string,
-  options: { query?: Record<string, string>; body?: unknown } = {},
-): Promise<ReturnType<typeof successResult>> {
-  if (!serviceUrl) {
-    return errorResult(
-      'CalDAV not configured on the host. The operator needs to set ICLOUD_APPLE_ID and ICLOUD_APP_PASSWORD in .env and restart NanoClaw.',
-    );
-  }
-
-  const url = new URL(path, serviceUrl);
-  if (options.query) {
-    for (const [k, v] of Object.entries(options.query)) {
-      url.searchParams.set(k, v);
-    }
-  }
-
-  let response: Response;
-  try {
-    response = await fetch(url, {
-      method,
-      headers:
-        options.body !== undefined ? { 'content-type': 'application/json' } : {},
-      body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
-    });
-  } catch (err) {
-    return errorResult(
-      `CalDAV service unreachable at ${serviceUrl}: ${err instanceof Error ? err.message : String(err)}`,
-    );
-  }
-
-  const text = await response.text();
-  let parsed: unknown;
-  try {
-    parsed = text ? JSON.parse(text) : null;
-  } catch {
-    parsed = text;
-  }
-
-  if (!response.ok) {
-    const msg =
-      parsed &&
-      typeof parsed === 'object' &&
-      'error' in (parsed as Record<string, unknown>)
-        ? String((parsed as Record<string, unknown>).error)
-        : text || `HTTP ${response.status}`;
-    return errorResult(`CalDAV error (${response.status}): ${msg}`);
-  }
-
-  return successResult(parsed ?? '');
-}
+const isoTimestamp = z.string().refine((v) => /Z$|[+-]\d{2}:\d{2}$/.test(v), {
+  message:
+    'Timestamp must be ISO-8601 with explicit timezone (e.g. "2026-04-20T10:00:00-04:00" or "...Z"). Naked local times are rejected.',
+});
 
 const server = new McpServer({
   name: 'caldav',
@@ -98,7 +26,7 @@ const server = new McpServer({
 
 server.tool(
   'list_calendars',
-  'List the user\'s iCloud calendars with their URLs. Use the URLs as calendar_url in other tools.',
+  "List the user's iCloud calendars with their URLs. Use the URLs as calendar_url in other tools.",
   {},
   async () => call('GET', '/calendars'),
 );
@@ -125,7 +53,9 @@ server.tool(
   'create_event',
   'Create a calendar event. Only call this after the user has confirmed the specific time, calendar, and title. Use all_day=true for date-only events (start_iso and end_iso still use ISO format; time portion is ignored).',
   {
-    calendar_url: z.string().describe('Target calendar URL from list_calendars'),
+    calendar_url: z
+      .string()
+      .describe('Target calendar URL from list_calendars'),
     title: z.string().describe('Event title / summary'),
     start_iso: isoTimestamp.describe('Start time, ISO-8601 with timezone'),
     end_iso: isoTimestamp.describe('End time, ISO-8601 with timezone'),
@@ -151,7 +81,9 @@ server.tool(
   'update_event',
   'Update fields on an existing event. Omitted fields stay unchanged.',
   {
-    event_url: z.string().describe('Event URL returned by create_event or list_events'),
+    event_url: z
+      .string()
+      .describe('Event URL returned by create_event or list_events'),
     title: z.string().optional(),
     start_iso: isoTimestamp.optional(),
     end_iso: isoTimestamp.optional(),
@@ -179,7 +111,8 @@ server.tool(
   {
     event_url: z.string().describe('Event URL to delete'),
   },
-  async (args) => call('DELETE', '/events', { body: { event_url: args.event_url } }),
+  async (args) =>
+    call('DELETE', '/events', { body: { event_url: args.event_url } }),
 );
 
 server.tool(
@@ -188,7 +121,9 @@ server.tool(
   {
     calendar_url: z
       .string()
-      .describe('Reminders-list URL from list_calendars (iCloud exposes reminder lists alongside event calendars)'),
+      .describe(
+        'Reminders-list URL from list_calendars (iCloud exposes reminder lists alongside event calendars)',
+      ),
     include_completed: z
       .boolean()
       .optional()
@@ -237,7 +172,9 @@ server.tool(
   'update_reminder',
   'Update fields on a reminder, or mark it complete/incomplete via the completed flag. Omitted fields stay unchanged.',
   {
-    event_url: z.string().describe('Reminder URL returned by create_reminder or list_reminders'),
+    event_url: z
+      .string()
+      .describe('Reminder URL returned by create_reminder or list_reminders'),
     title: z.string().optional(),
     due_iso: isoTimestamp.optional(),
     clear_due: z

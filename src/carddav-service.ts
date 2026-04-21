@@ -1,16 +1,13 @@
 /**
- * Host-side CardDAV service for iCloud contacts.
- *
- * Sibling to src/caldav-service.ts: same host-side-service pattern
- * (credentials on the host, container gets a URL), different protocol.
- * Read-only for v1 — surfacing contacts to the agent is the common case;
- * writes can be added later if requested.
+ * Host-side CardDAV service for iCloud contacts. Read-only. Same
+ * host-side-service pattern as src/caldav-service.ts.
  */
 import { createServer, IncomingMessage, Server, ServerResponse } from 'http';
 import { URL } from 'url';
 
 import { DAVAddressBook, DAVClient, DAVObject } from 'tsdav';
 
+import { extractDisplayName, sendJson } from './dav-service-util.js';
 import { readEnvFile } from './env.js';
 import { logger } from './logger.js';
 
@@ -31,26 +28,8 @@ interface ContactSummary {
 
 const LOGIN_RETRY_INTERVAL_MS = 60_000;
 
-function sendJson(res: ServerResponse, status: number, body: unknown): void {
-  const payload = JSON.stringify(body);
-  res.writeHead(status, {
-    'content-type': 'application/json; charset=utf-8',
-    'content-length': Buffer.byteLength(payload),
-  });
-  res.end(payload);
-}
-
-function extractDisplayName(book: DAVAddressBook): string {
-  const dn = book.displayName;
-  if (typeof dn === 'string') return dn;
-  if (dn && typeof dn === 'object' && '_cdata' in dn) {
-    return String((dn as { _cdata: string })._cdata);
-  }
-  return '';
-}
-
-// Minimal vCard 3.0/4.0 line parser. Handles folded lines (RFC 6350 §3.2)
-// and unescapes \n, \,, \;, \\. We only extract fields the agent actually uses.
+// Minimal vCard 3.0/4.0 parser: handles folded lines (RFC 6350 §3.2) and
+// unescapes \n, \,, \;, \\. Only fields the agent consumes are extracted.
 function unfoldLines(raw: string): string[] {
   const lines = raw.split(/\r?\n/);
   const out: string[] = [];
@@ -184,13 +163,22 @@ function normalizeForSearch(s: string): string {
   return s.toLowerCase().replace(/[\s().+-]/g, '');
 }
 
-function matchesQuery(c: ContactSummary, q: string): boolean {
-  if (!q) return true;
+interface ParsedQuery {
+  needle: string;
+  normNeedle: string;
+}
+
+function prepareQuery(q: string): ParsedQuery | null {
   const needle = q.toLowerCase().trim();
+  if (!needle) return null;
+  return { needle, normNeedle: normalizeForSearch(needle) };
+}
+
+function matchesQuery(c: ContactSummary, q: ParsedQuery): boolean {
+  const { needle, normNeedle } = q;
   if (c.full_name.toLowerCase().includes(needle)) return true;
   if (c.organization?.toLowerCase().includes(needle)) return true;
   if (c.notes?.toLowerCase().includes(needle)) return true;
-  const normNeedle = normalizeForSearch(needle);
   if (normNeedle.length >= 4) {
     for (const p of c.phones) {
       if (normalizeForSearch(p.value).includes(normNeedle)) return true;
@@ -200,6 +188,13 @@ function matchesQuery(c: ContactSummary, q: string): boolean {
     if (e.value.toLowerCase().includes(needle)) return true;
   }
   return false;
+}
+
+function compareContacts(a: ContactSummary, b: ContactSummary): number {
+  const an = a.full_name || '';
+  const bn = b.full_name || '';
+  if (an !== bn) return an.localeCompare(bn);
+  return a.url.localeCompare(b.url);
 }
 
 export async function startCarddavService(
@@ -226,15 +221,18 @@ export async function startCarddavService(
 
   let loginStatus: LoginStatus = 'pending';
   let lastError: string | undefined;
+  let loginInFlight = false;
 
-  // Address books + contact cache. iCloud address books rarely change within a
-  // single session; a short TTL keeps search cheap without risking staleness.
+  // 5-minute cache is a compromise between search latency and visibility of
+  // contacts added on another device mid-session.
   const CONTACTS_TTL_MS = 5 * 60 * 1000;
   let addressBooks: DAVAddressBook[] = [];
   let cachedContacts: ContactSummary[] | null = null;
   let cachedAt = 0;
 
   const attemptLogin = async (): Promise<void> => {
+    if (loginInFlight) return;
+    loginInFlight = true;
     try {
       await client.login();
       addressBooks = await client.fetchAddressBooks();
@@ -253,6 +251,8 @@ export async function startCarddavService(
       } else {
         logger.warn({ err: msg }, 'CardDAV login failed — will retry');
       }
+    } finally {
+      loginInFlight = false;
     }
   };
 
@@ -272,6 +272,7 @@ export async function startCarddavService(
       const objects = await client.fetchVCards({ addressBook: book });
       all.push(...parseContactsFromObjects(objects));
     }
+    all.sort(compareContacts);
     cachedContacts = all;
     cachedAt = now;
     return all;
@@ -321,14 +322,8 @@ export async function startCarddavService(
         Math.max(1, parseInt(requestUrl.searchParams.get('limit') || '50', 10)),
       );
       const all = await loadAllContacts();
-      const filtered = q ? all.filter((c) => matchesQuery(c, q)) : all;
-      // Stable ordering: FN asc, then url.
-      filtered.sort((a, b) => {
-        const an = a.full_name || '';
-        const bn = b.full_name || '';
-        if (an !== bn) return an.localeCompare(bn);
-        return a.url.localeCompare(b.url);
-      });
+      const query = prepareQuery(q);
+      const filtered = query ? all.filter((c) => matchesQuery(c, query)) : all;
       sendJson(res, 200, {
         total: filtered.length,
         returned: Math.min(limit, filtered.length),

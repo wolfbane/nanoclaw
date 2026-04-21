@@ -13,6 +13,7 @@ vi.mock('./config.js', () => ({
   CONTAINER_TIMEOUT: 1800000, // 30min
   CREDENTIAL_PROXY_PORT: 3001,
   CALDAV_SERVICE_PORT: 3002,
+  CARDDAV_SERVICE_PORT: 3003,
   DATA_DIR: '/tmp/nanoclaw-test-data',
   GROUPS_DIR: '/tmp/nanoclaw-test-groups',
   IDLE_TIMEOUT: 1800000, // 30min

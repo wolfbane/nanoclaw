@@ -1,89 +1,18 @@
 /**
- * Stdio MCP server for CardDAV (iCloud contacts).
- *
- * Thin forwarder over fetch against the host-side service
- * (src/carddav-service.ts). The agent never sees iCloud credentials; the
- * container only sees NANOCLAW_CARDDAV_SERVICE_URL.
- *
- * Read-only for v1. Writes can be added later if the user needs them.
+ * Stdio MCP server for CardDAV. Thin fetch forwarder to the host-side
+ * service (src/carddav-service.ts). Read-only.
  */
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 
-const serviceUrl = process.env.NANOCLAW_CARDDAV_SERVICE_URL || '';
+import { makeDavCaller } from './dav-http-client.js';
 
-function errorResult(text: string) {
-  return {
-    content: [{ type: 'text' as const, text }],
-    isError: true,
-  };
-}
-
-function successResult(body: unknown) {
-  return {
-    content: [
-      {
-        type: 'text' as const,
-        text: typeof body === 'string' ? body : JSON.stringify(body, null, 2),
-      },
-    ],
-  };
-}
-
-async function call(
-  method: 'GET' | 'POST',
-  path: string,
-  options: { query?: Record<string, string>; body?: unknown } = {},
-): Promise<ReturnType<typeof successResult>> {
-  if (!serviceUrl) {
-    return errorResult(
-      'CardDAV not configured on the host. The operator needs to set ICLOUD_APPLE_ID and ICLOUD_APP_PASSWORD in .env and restart NanoClaw.',
-    );
-  }
-
-  const url = new URL(path, serviceUrl);
-  if (options.query) {
-    for (const [k, v] of Object.entries(options.query)) {
-      url.searchParams.set(k, v);
-    }
-  }
-
-  let response: Response;
-  try {
-    response = await fetch(url, {
-      method,
-      headers:
-        options.body !== undefined ? { 'content-type': 'application/json' } : {},
-      body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
-    });
-  } catch (err) {
-    return errorResult(
-      `CardDAV service unreachable at ${serviceUrl}: ${err instanceof Error ? err.message : String(err)}`,
-    );
-  }
-
-  const text = await response.text();
-  let parsed: unknown;
-  try {
-    parsed = text ? JSON.parse(text) : null;
-  } catch {
-    parsed = text;
-  }
-
-  if (!response.ok) {
-    const msg =
-      parsed &&
-      typeof parsed === 'object' &&
-      'error' in (parsed as Record<string, unknown>)
-        ? String((parsed as Record<string, unknown>).error)
-        : text || `HTTP ${response.status}`;
-    return errorResult(`CardDAV error (${response.status}): ${msg}`);
-  }
-
-  return successResult(parsed ?? '');
-}
+const call = makeDavCaller(
+  'CardDAV',
+  process.env.NANOCLAW_CARDDAV_SERVICE_URL || '',
+);
 
 const server = new McpServer({
   name: 'carddav',

@@ -1,20 +1,8 @@
 /**
- * Host-side CalDAV service for iCloud calendar access.
- *
- * Third-party integrations follow a "host-side service" pattern: credentials
- * live on the host, and the container receives only an internal URL. This is
- * different from the credential proxy (src/credential-proxy.ts), which is a
- * transparent HTTP forwarder dedicated to Anthropic. iCloud CalDAV uses
- * per-shard redirects and returns absolute URLs inside DAV multistatus XML
- * bodies — a path-prefix proxy cannot rewrite those transparently.
- *
- * This service:
- *   - Reads ICLOUD_APPLE_ID / ICLOUD_APP_PASSWORD via readEnvFile (never
- *     loaded into process.env, so they never leak to child containers).
- *   - Keeps a long-lived tsdav DAVClient authenticated against iCloud.
- *   - Exposes a small JSON HTTP API on the proxy bind host.
- *   - Refuses to start when credentials are absent — returning null lets the
- *     host keep running without CalDAV enabled.
+ * Host-side CalDAV service for iCloud calendar access. Credentials live on
+ * the host (via readEnvFile, never in process.env); the container receives
+ * only an internal URL. Used for iCloud because CalDAV returns absolute
+ * shard URLs in DAV multistatus XML that a path-prefix proxy can't rewrite.
  */
 import { createServer, IncomingMessage, Server, ServerResponse } from 'http';
 import { URL } from 'url';
@@ -23,6 +11,11 @@ import ical, { ICalEventData } from 'ical-generator';
 import nodeIcal from 'node-ical';
 import { DAVCalendar, DAVCalendarObject, DAVClient } from 'tsdav';
 
+import {
+  extractDisplayName,
+  readJsonBody,
+  sendJson,
+} from './dav-service-util.js';
 import { readEnvFile } from './env.js';
 import { logger } from './logger.js';
 
@@ -89,37 +82,11 @@ interface UpdateEventBody {
   notes?: string;
 }
 
-interface DeleteEventBody {
+interface DeleteCalDavObjectBody {
   event_url: string;
 }
 
 const LOGIN_RETRY_INTERVAL_MS = 60_000;
-
-function sendJson(res: ServerResponse, status: number, body: unknown): void {
-  const payload = JSON.stringify(body);
-  res.writeHead(status, {
-    'content-type': 'application/json; charset=utf-8',
-    'content-length': Buffer.byteLength(payload),
-  });
-  res.end(payload);
-}
-
-async function readJsonBody<T>(req: IncomingMessage): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    req.on('data', (c) => chunks.push(c));
-    req.on('end', () => {
-      const raw = Buffer.concat(chunks).toString('utf-8');
-      if (!raw) return resolve({} as T);
-      try {
-        resolve(JSON.parse(raw) as T);
-      } catch (err) {
-        reject(err);
-      }
-    });
-    req.on('error', reject);
-  });
-}
 
 function findCalendarByUrl(
   calendars: DAVCalendar[],
@@ -133,15 +100,6 @@ function findCalendarForObject(
   objectUrl: string,
 ): DAVCalendar | undefined {
   return calendars.find((c) => objectUrl.startsWith(c.url));
-}
-
-function extractDisplayName(cal: DAVCalendar): string {
-  const dn = cal.displayName;
-  if (typeof dn === 'string') return dn;
-  if (dn && typeof dn === 'object' && '_cdata' in dn) {
-    return String((dn as { _cdata: string })._cdata);
-  }
-  return '';
 }
 
 function buildICalString(data: {
@@ -379,13 +337,18 @@ export async function startCaldavService(
 
   let loginStatus: LoginStatus = 'pending';
   let lastError: string | undefined;
+  let loginInFlight = false;
+  let cachedCalendars: DAVCalendar[] = [];
 
   const attemptLogin = async (): Promise<void> => {
+    if (loginInFlight) return;
+    loginInFlight = true;
     try {
       await client.login();
+      cachedCalendars = await client.fetchCalendars();
       loginStatus = 'ok';
       lastError = undefined;
-      logger.info('CalDAV login succeeded');
+      logger.info({ count: cachedCalendars.length }, 'CalDAV login succeeded');
     } catch (err) {
       loginStatus = 'failed';
       const msg = err instanceof Error ? err.message : String(err);
@@ -398,6 +361,8 @@ export async function startCaldavService(
       } else {
         logger.warn({ err: msg }, 'CalDAV login failed — will retry');
       }
+    } finally {
+      loginInFlight = false;
     }
   };
 
@@ -407,9 +372,7 @@ export async function startCaldavService(
   }, LOGIN_RETRY_INTERVAL_MS);
   retryTimer.unref();
 
-  const fetchCalendarList = async (): Promise<DAVCalendar[]> => {
-    return client.fetchCalendars();
-  };
+  const fetchCalendarList = async (): Promise<DAVCalendar[]> => cachedCalendars;
 
   const handle = async (
     req: IncomingMessage,
@@ -697,7 +660,7 @@ export async function startCaldavService(
     }
 
     if (method === 'DELETE' && pathname === '/reminders') {
-      const body = await readJsonBody<DeleteEventBody>(req);
+      const body = await readJsonBody<DeleteCalDavObjectBody>(req);
       if (!body.event_url) {
         sendJson(res, 400, { error: 'event_url is required' });
         return 400;
@@ -729,7 +692,7 @@ export async function startCaldavService(
     }
 
     if (method === 'DELETE' && pathname === '/events') {
-      const body = await readJsonBody<DeleteEventBody>(req);
+      const body = await readJsonBody<DeleteCalDavObjectBody>(req);
       if (!body.event_url) {
         sendJson(res, 400, { error: 'event_url is required' });
         return 400;
@@ -760,6 +723,16 @@ export async function startCaldavService(
       return 200;
     }
 
+    if (method === 'POST' && pathname === '/refresh') {
+      await attemptLogin();
+      sendJson(res, 200, {
+        ok: loginStatus === 'ok',
+        loginStatus,
+        calendars: cachedCalendars.length,
+      });
+      return 200;
+    }
+
     sendJson(res, 404, { error: 'not found' });
     return 404;
   };
@@ -770,7 +743,6 @@ export async function startCaldavService(
     handle(req, res)
       .then((status) => {
         logger.debug({ method, path, status }, 'caldav-service request');
-        // Flag unauthorized so the operator sees password-rotation signals.
         if (status === 401 || status === 403) {
           logger.error(
             { method, path, status },
