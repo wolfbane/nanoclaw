@@ -9,6 +9,7 @@ import { DAVAddressBook, DAVClient, DAVObject } from 'tsdav';
 
 import {
   DavLoginManager,
+  REQUEST_URL_BASE,
   extractDisplayName,
   sendJson,
   startICloudDavService,
@@ -209,8 +210,7 @@ export function startCarddavService(
     host,
     fetchResources: (client) => client.fetchAddressBooks(),
     initialResources: [],
-    buildHandler: ({ client, loginManager, host, port }) =>
-      buildCarddavHandler(client, loginManager, host, port),
+    buildHandler: buildCarddavHandler,
   });
 }
 
@@ -218,12 +218,13 @@ export function startCarddavService(
 // contacts added on another device mid-session.
 const CONTACTS_TTL_MS = 5 * 60 * 1000;
 
-function buildCarddavHandler(
-  client: DAVClient,
-  loginManager: DavLoginManager<DAVAddressBook[]>,
-  host: string,
-  port: number,
-): (req: IncomingMessage, res: ServerResponse) => Promise<number> {
+function buildCarddavHandler({
+  client,
+  loginManager,
+}: {
+  client: DAVClient;
+  loginManager: DavLoginManager<DAVAddressBook[]>;
+}): (req: IncomingMessage, res: ServerResponse) => Promise<number> {
   let cachedContacts: ContactSummary[] | null = null;
   let cachedAt = 0;
 
@@ -245,7 +246,7 @@ function buildCarddavHandler(
   };
 
   return async (req: IncomingMessage, res: ServerResponse): Promise<number> => {
-    const requestUrl = new URL(req.url || '/', `http://${host}:${port}`);
+    const requestUrl = new URL(req.url || '/', REQUEST_URL_BASE);
     const pathname = requestUrl.pathname;
     const method = req.method || 'GET';
     const loginStatus = loginManager.getStatus();

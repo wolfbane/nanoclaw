@@ -13,6 +13,7 @@ import { DAVCalendar, DAVCalendarObject, DAVClient } from 'tsdav';
 
 import {
   DavLoginManager,
+  REQUEST_URL_BASE,
   extractDisplayName,
   readJsonBody,
   sendJson,
@@ -322,22 +323,22 @@ export function startCaldavService(
     host,
     fetchResources: (client) => client.fetchCalendars(),
     initialResources: [],
-    buildHandler: ({ client, loginManager, host, port }) =>
-      buildCaldavHandler(client, loginManager, host, port),
+    buildHandler: buildCaldavHandler,
   });
 }
 
-function buildCaldavHandler(
-  client: DAVClient,
-  loginManager: DavLoginManager<DAVCalendar[]>,
-  host: string,
-  port: number,
-): (req: IncomingMessage, res: ServerResponse) => Promise<number> {
+function buildCaldavHandler({
+  client,
+  loginManager,
+}: {
+  client: DAVClient;
+  loginManager: DavLoginManager<DAVCalendar[]>;
+}): (req: IncomingMessage, res: ServerResponse) => Promise<number> {
   const fetchCalendarList = async (): Promise<DAVCalendar[]> =>
     loginManager.getResources();
 
   return async (req: IncomingMessage, res: ServerResponse): Promise<number> => {
-    const requestUrl = new URL(req.url || '/', `http://${host}:${port}`);
+    const requestUrl = new URL(req.url || '/', REQUEST_URL_BASE);
     const pathname = requestUrl.pathname;
     const method = req.method || 'GET';
 

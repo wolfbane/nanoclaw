@@ -120,9 +120,11 @@ export function createDavLoginManager<R>(opts: {
 export interface ICloudDavServiceContext<R> {
   client: DAVClient;
   loginManager: DavLoginManager<R>;
-  host: string;
-  port: number;
 }
+
+// Handlers only read pathname/searchParams from the request URL, so any
+// well-formed base satisfies the URL constructor.
+export const REQUEST_URL_BASE = 'http://dav';
 
 export async function startICloudDavService<R>(opts: {
   serviceName: string;
@@ -163,12 +165,7 @@ export async function startICloudDavService<R>(opts: {
 
   await loginManager.attemptLogin();
 
-  const handle = opts.buildHandler({
-    client,
-    loginManager,
-    host: opts.host,
-    port: opts.port,
-  });
+  const handle = opts.buildHandler({ client, loginManager });
 
   const server = createDavHttpServer(opts.serviceName, handle);
   server.on('close', () => loginManager.stop());
