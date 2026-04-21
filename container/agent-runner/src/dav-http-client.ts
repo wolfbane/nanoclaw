@@ -44,16 +44,13 @@ export function makeDavCaller(
       }
     }
 
+    const hasBody = options.body !== undefined;
     let response: Response;
     try {
       response = await fetch(url, {
         method,
-        headers:
-          options.body !== undefined
-            ? { 'content-type': 'application/json' }
-            : {},
-        body:
-          options.body !== undefined ? JSON.stringify(options.body) : undefined,
+        headers: hasBody ? { 'content-type': 'application/json' } : {},
+        body: hasBody ? JSON.stringify(options.body) : undefined,
       });
     } catch (err) {
       return errorResult(
@@ -70,15 +67,22 @@ export function makeDavCaller(
     }
 
     if (!response.ok) {
-      const msg =
-        parsed &&
-        typeof parsed === 'object' &&
-        'error' in (parsed as Record<string, unknown>)
-          ? String((parsed as Record<string, unknown>).error)
-          : text || `HTTP ${response.status}`;
-      return errorResult(`${serviceName} error (${response.status}): ${msg}`);
+      return errorResult(
+        `${serviceName} error (${response.status}): ${extractErrorMessage(parsed, text, response.status)}`,
+      );
     }
 
     return successResult(parsed ?? '');
   };
+}
+
+function extractErrorMessage(
+  parsed: unknown,
+  text: string,
+  status: number,
+): string {
+  if (parsed && typeof parsed === 'object' && 'error' in parsed) {
+    return String((parsed as { error: unknown }).error);
+  }
+  return text || `HTTP ${status}`;
 }

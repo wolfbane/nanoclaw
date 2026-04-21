@@ -7,11 +7,13 @@ import { URL } from 'url';
 
 import { DAVAddressBook, DAVClient, DAVObject } from 'tsdav';
 
-import { extractDisplayName, sendJson } from './dav-service-util.js';
+import {
+  createDavLoginManager,
+  extractDisplayName,
+  sendJson,
+} from './dav-service-util.js';
 import { readEnvFile } from './env.js';
 import { logger } from './logger.js';
-
-type LoginStatus = 'pending' | 'ok' | 'failed';
 
 interface ContactSummary {
   url: string;
@@ -219,46 +221,22 @@ export async function startCarddavService(
     defaultAccountType: 'carddav',
   });
 
-  let loginStatus: LoginStatus = 'pending';
-  let lastError: string | undefined;
-  let loginInFlight = false;
+  const loginManager = createDavLoginManager<DAVAddressBook[]>({
+    client,
+    serviceName: 'CardDAV',
+    fetchResources: () => client.fetchAddressBooks(),
+    initialResources: [],
+  });
 
   // 5-minute cache is a compromise between search latency and visibility of
   // contacts added on another device mid-session.
   const CONTACTS_TTL_MS = 5 * 60 * 1000;
-  let addressBooks: DAVAddressBook[] = [];
   let cachedContacts: ContactSummary[] | null = null;
   let cachedAt = 0;
 
-  const attemptLogin = async (): Promise<void> => {
-    if (loginInFlight) return;
-    loginInFlight = true;
-    try {
-      await client.login();
-      addressBooks = await client.fetchAddressBooks();
-      loginStatus = 'ok';
-      lastError = undefined;
-      logger.info({ count: addressBooks.length }, 'CardDAV login succeeded');
-    } catch (err) {
-      loginStatus = 'failed';
-      const msg = err instanceof Error ? err.message : String(err);
-      lastError = msg;
-      if (/401|unauthorized/i.test(msg)) {
-        logger.error(
-          { err: msg },
-          'CardDAV login failed (401). Regenerate the app-specific password at appleid.apple.com and update ICLOUD_APP_PASSWORD in .env.',
-        );
-      } else {
-        logger.warn({ err: msg }, 'CardDAV login failed — will retry');
-      }
-    } finally {
-      loginInFlight = false;
-    }
-  };
-
-  await attemptLogin();
+  await loginManager.attemptLogin();
   const retryTimer = setInterval(() => {
-    if (loginStatus !== 'ok') void attemptLogin();
+    if (loginManager.getStatus() !== 'ok') void loginManager.attemptLogin();
   }, LOGIN_RETRY_INTERVAL_MS);
   retryTimer.unref();
 
@@ -268,7 +246,7 @@ export async function startCarddavService(
       return cachedContacts;
     }
     const all: ContactSummary[] = [];
-    for (const book of addressBooks) {
+    for (const book of loginManager.getResources()) {
       const objects = await client.fetchVCards({ addressBook: book });
       all.push(...parseContactsFromObjects(objects));
     }
@@ -285,6 +263,9 @@ export async function startCarddavService(
     const requestUrl = new URL(req.url || '/', `http://${host}:${port}`);
     const pathname = requestUrl.pathname;
     const method = req.method || 'GET';
+    const loginStatus = loginManager.getStatus();
+    const lastError = loginManager.getLastError();
+    const addressBooks = loginManager.getResources();
 
     if (method === 'GET' && pathname === '/health') {
       sendJson(res, 200, {
@@ -333,12 +314,13 @@ export async function startCarddavService(
     }
 
     if (method === 'POST' && pathname === '/refresh') {
-      await attemptLogin();
+      await loginManager.attemptLogin();
       cachedContacts = null;
+      const postStatus = loginManager.getStatus();
       sendJson(res, 200, {
-        ok: true,
-        addressBooks: addressBooks.length,
-        loginStatus,
+        ok: postStatus === 'ok',
+        loginStatus: postStatus,
+        addressBooks: loginManager.getResources().length,
       });
       return 200;
     }
@@ -379,7 +361,10 @@ export async function startCarddavService(
 
   return new Promise((resolve, reject) => {
     server.listen(port, host, () => {
-      logger.info({ host, port, loginStatus }, 'CardDAV service started');
+      logger.info(
+        { host, port, loginStatus: loginManager.getStatus() },
+        'CardDAV service started',
+      );
       resolve(server);
     });
     server.on('error', reject);

@@ -12,14 +12,13 @@ import nodeIcal from 'node-ical';
 import { DAVCalendar, DAVCalendarObject, DAVClient } from 'tsdav';
 
 import {
+  createDavLoginManager,
   extractDisplayName,
   readJsonBody,
   sendJson,
 } from './dav-service-util.js';
 import { readEnvFile } from './env.js';
 import { logger } from './logger.js';
-
-type LoginStatus = 'pending' | 'ok' | 'failed';
 
 interface CalendarEvent {
   uid: string;
@@ -335,44 +334,21 @@ export async function startCaldavService(
     defaultAccountType: 'caldav',
   });
 
-  let loginStatus: LoginStatus = 'pending';
-  let lastError: string | undefined;
-  let loginInFlight = false;
-  let cachedCalendars: DAVCalendar[] = [];
+  const loginManager = createDavLoginManager<DAVCalendar[]>({
+    client,
+    serviceName: 'CalDAV',
+    fetchResources: () => client.fetchCalendars(),
+    initialResources: [],
+  });
 
-  const attemptLogin = async (): Promise<void> => {
-    if (loginInFlight) return;
-    loginInFlight = true;
-    try {
-      await client.login();
-      cachedCalendars = await client.fetchCalendars();
-      loginStatus = 'ok';
-      lastError = undefined;
-      logger.info({ count: cachedCalendars.length }, 'CalDAV login succeeded');
-    } catch (err) {
-      loginStatus = 'failed';
-      const msg = err instanceof Error ? err.message : String(err);
-      lastError = msg;
-      if (/401|unauthorized/i.test(msg)) {
-        logger.error(
-          { err: msg },
-          'CalDAV login failed (401). Regenerate the app-specific password at appleid.apple.com and update ICLOUD_APP_PASSWORD in .env.',
-        );
-      } else {
-        logger.warn({ err: msg }, 'CalDAV login failed — will retry');
-      }
-    } finally {
-      loginInFlight = false;
-    }
-  };
-
-  await attemptLogin();
+  await loginManager.attemptLogin();
   const retryTimer = setInterval(() => {
-    if (loginStatus !== 'ok') void attemptLogin();
+    if (loginManager.getStatus() !== 'ok') void loginManager.attemptLogin();
   }, LOGIN_RETRY_INTERVAL_MS);
   retryTimer.unref();
 
-  const fetchCalendarList = async (): Promise<DAVCalendar[]> => cachedCalendars;
+  const fetchCalendarList = async (): Promise<DAVCalendar[]> =>
+    loginManager.getResources();
 
   const handle = async (
     req: IncomingMessage,
@@ -381,6 +357,9 @@ export async function startCaldavService(
     const requestUrl = new URL(req.url || '/', `http://${host}:${port}`);
     const pathname = requestUrl.pathname;
     const method = req.method || 'GET';
+
+    const loginStatus = loginManager.getStatus();
+    const lastError = loginManager.getLastError();
 
     if (method === 'GET' && pathname === '/health') {
       sendJson(res, 200, {
@@ -724,11 +703,12 @@ export async function startCaldavService(
     }
 
     if (method === 'POST' && pathname === '/refresh') {
-      await attemptLogin();
+      await loginManager.attemptLogin();
+      const postStatus = loginManager.getStatus();
       sendJson(res, 200, {
-        ok: loginStatus === 'ok',
-        loginStatus,
-        calendars: cachedCalendars.length,
+        ok: postStatus === 'ok',
+        loginStatus: postStatus,
+        calendars: loginManager.getResources().length,
       });
       return 200;
     }
@@ -769,7 +749,10 @@ export async function startCaldavService(
 
   return new Promise((resolve, reject) => {
     server.listen(port, host, () => {
-      logger.info({ host, port, loginStatus }, 'CalDAV service started');
+      logger.info(
+        { host, port, loginStatus: loginManager.getStatus() },
+        'CalDAV service started',
+      );
       resolve(server);
     });
     server.on('error', reject);
