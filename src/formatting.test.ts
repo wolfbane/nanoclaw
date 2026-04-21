@@ -3,6 +3,7 @@ import { describe, it, expect } from 'vitest';
 import {
   ASSISTANT_NAME,
   getTriggerPattern,
+  resolveRequiresTrigger,
   TRIGGER_PATTERN,
 } from './config.js';
 import {
@@ -289,22 +290,13 @@ describe('formatOutbound', () => {
 // --- Trigger gating with requiresTrigger flag ---
 
 describe('trigger gating (requiresTrigger interaction)', () => {
-  // Replicates the exact logic from processGroupMessages and startMessageLoop:
-  //   if (!isMainGroup && group.requiresTrigger !== false) { check group.trigger }
-  function shouldRequireTrigger(
-    isMainGroup: boolean,
-    requiresTrigger: boolean | undefined,
-  ): boolean {
-    return !isMainGroup && requiresTrigger !== false;
-  }
-
   function shouldProcess(
     isMainGroup: boolean,
     requiresTrigger: boolean | undefined,
     trigger: string | undefined,
     messages: NewMessage[],
   ): boolean {
-    if (!shouldRequireTrigger(isMainGroup, requiresTrigger)) return true;
+    if (!resolveRequiresTrigger({ requiresTrigger }, isMainGroup)) return true;
     const triggerPattern = getTriggerPattern(trigger);
     return messages.some((m) => triggerPattern.test(m.content.trim()));
   }
@@ -314,8 +306,13 @@ describe('trigger gating (requiresTrigger interaction)', () => {
     expect(shouldProcess(true, undefined, undefined, msgs)).toBe(true);
   });
 
-  it('main group processes even with requiresTrigger=true', () => {
+  it('main group with requiresTrigger=true gates on trigger (shared-channel opt-in)', () => {
     const msgs = [makeMsg({ content: 'hello no trigger' })];
+    expect(shouldProcess(true, true, undefined, msgs)).toBe(false);
+  });
+
+  it('main group with requiresTrigger=true processes when trigger present', () => {
+    const msgs = [makeMsg({ content: `@${ASSISTANT_NAME} do something` })];
     expect(shouldProcess(true, true, undefined, msgs)).toBe(true);
   });
 

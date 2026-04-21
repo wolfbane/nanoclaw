@@ -7,6 +7,7 @@ import {
   getTriggerPattern,
   IDLE_TIMEOUT,
   MAX_MESSAGES_PER_PROMPT,
+  resolveRequiresTrigger,
   TIMEZONE,
 } from './config.js';
 import {
@@ -89,10 +90,8 @@ export async function processGroupMessages(
         const hasTrigger = getTriggerPattern(group.trigger).test(
           msg.content.trim(),
         );
-        const reqTrigger = !isMainGroup && group.requiresTrigger !== false;
         return (
-          isMainGroup ||
-          !reqTrigger ||
+          !resolveRequiresTrigger(group, isMainGroup) ||
           (hasTrigger &&
             (msg.is_from_me ||
               isTriggerAllowed(chatJid, msg.sender, loadSenderAllowlist())))
@@ -103,8 +102,7 @@ export async function processGroupMessages(
   if (cmdResult.handled) return cmdResult.success;
   // --- End session command interception ---
 
-  // For non-main groups, check if trigger is required and present
-  if (!isMainGroup && group.requiresTrigger !== false) {
+  if (resolveRequiresTrigger(group, isMainGroup)) {
     const triggerPattern = getTriggerPattern(group.trigger);
     const allowlistCfg = loadSenderAllowlist();
     const hasTrigger = missedMessages.some(

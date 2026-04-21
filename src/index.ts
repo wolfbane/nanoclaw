@@ -11,6 +11,7 @@ import {
   GROUPS_DIR,
   MAX_MESSAGES_PER_PROMPT,
   POLL_INTERVAL,
+  resolveRequiresTrigger,
   TIMEZONE,
 } from './config.js';
 import { startCaldavService } from './caldav-service.js';
@@ -243,12 +244,7 @@ async function startMessageLoop(): Promise<void> {
           }
           // --- End session command interception ---
 
-          const needsTrigger = !isMainGroup && group.requiresTrigger !== false;
-
-          // For non-main groups, only act on trigger messages.
-          // Non-trigger messages accumulate in DB and get pulled as
-          // context when a trigger eventually arrives.
-          if (needsTrigger) {
+          if (resolveRequiresTrigger(group, isMainGroup)) {
             const triggerPattern = getTriggerPattern(group.trigger);
             const allowlistCfg = loadSenderAllowlist();
             const hasTrigger = groupMessages.some(

@@ -99,6 +99,16 @@ export function getTriggerPattern(trigger?: string): RegExp {
 
 export const TRIGGER_PATTERN = buildTriggerPattern(DEFAULT_TRIGGER);
 
+// Explicit `requiresTrigger` overrides the main-group bypass, so a main
+// group that shares a channel with sibling bots can opt into gated
+// triggers and stay silent on messages meant for those siblings.
+export function resolveRequiresTrigger(
+  group: { requiresTrigger?: boolean },
+  isMainGroup: boolean,
+): boolean {
+  return group.requiresTrigger ?? !isMainGroup;
+}
+
 // Timezone for scheduled tasks, message formatting, etc.
 // Validates each candidate is a real IANA identifier before accepting.
 function resolveConfigTimezone(): string {
