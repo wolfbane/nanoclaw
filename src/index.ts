@@ -468,19 +468,16 @@ async function main(): Promise<void> {
   // Factories return null when credentials are missing, so unconfigured channels are skipped.
   for (const channelName of getRegisteredChannelNames()) {
     const factory = getChannelFactory(channelName)!;
-    const result = factory(channelOpts);
-    if (!result) {
+    const channel = factory(channelOpts);
+    if (!channel) {
       logger.warn(
         { channel: channelName },
         'Channel installed but credentials missing — skipping. Check .env or re-run the channel skill.',
       );
       continue;
     }
-    const instances = Array.isArray(result) ? result : [result];
-    for (const channel of instances) {
-      channels.push(channel);
-      await channel.connect();
-    }
+    channels.push(channel);
+    await channel.connect();
   }
   if (channels.length === 0) {
     logger.fatal('No channels connected');

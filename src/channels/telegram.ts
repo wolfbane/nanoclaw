@@ -6,7 +6,7 @@ import { Api, Bot } from 'grammy';
 
 import { ASSISTANT_NAME, TRIGGER_PATTERN } from '../config.js';
 import { logOutboundMessage } from '../db.js';
-import { readEnvFile, readEnvFileFiltered } from '../env.js';
+import { readEnvFile } from '../env.js';
 import { resolveGroupFolderPath } from '../group-folder.js';
 import { logger } from '../logger.js';
 import { registerChannel, ChannelOpts } from './registry.js';
@@ -17,6 +17,8 @@ import {
   RegisteredGroup,
   SendOptions,
 } from '../types.js';
+
+const TG_PREFIX = 'tg:';
 
 export interface TelegramChannelOpts {
   onMessage: OnInboundMessage;
@@ -67,24 +69,10 @@ export class TelegramChannel implements Channel {
   private bot: Bot | null = null;
   private opts: TelegramChannelOpts;
   private botToken: string;
-  // Optional bot name enables multi-bot setups. When set, this instance only
-  // handles JIDs formatted as `tg:<botName>:<chatId>`; unprefixed `tg:<chatId>`
-  // is reserved for the default (unnamed) bot for backwards compatibility.
-  private botName?: string;
 
-  constructor(botToken: string, opts: TelegramChannelOpts, botName?: string) {
+  constructor(botToken: string, opts: TelegramChannelOpts) {
     this.botToken = botToken;
     this.opts = opts;
-    this.botName = botName;
-  }
-
-  private buildJid(chatId: number | string): string {
-    return this.botName ? `tg:${this.botName}:${chatId}` : `tg:${chatId}`;
-  }
-
-  private jidToChatId(jid: string): string {
-    const prefix = this.botName ? `tg:${this.botName}:` : 'tg:';
-    return jid.slice(prefix.length);
   }
 
   /**
@@ -155,7 +143,7 @@ export class TelegramChannel implements Channel {
           : (ctx.chat as any).title || 'Unknown';
 
       ctx.reply(
-        `Chat ID: \`${this.buildJid(chatId)}\`\nName: ${chatName}\nType: ${chatType}`,
+        `Chat ID: \`${TG_PREFIX}${chatId}\`\nName: ${chatName}\nType: ${chatType}`,
         { parse_mode: 'Markdown' },
       );
     });
@@ -175,7 +163,7 @@ export class TelegramChannel implements Channel {
         if (TELEGRAM_BOT_COMMANDS.has(cmd)) return;
       }
 
-      const chatJid = this.buildJid(ctx.chat.id);
+      const chatJid = `${TG_PREFIX}${ctx.chat.id}`;
       let content = ctx.message.text;
       const timestamp = new Date(ctx.message.date * 1000).toISOString();
       const senderName =
@@ -271,7 +259,7 @@ export class TelegramChannel implements Channel {
       placeholder: string,
       opts?: { fileId?: string; filename?: string },
     ) => {
-      const chatJid = this.buildJid(ctx.chat.id);
+      const chatJid = `${TG_PREFIX}${ctx.chat.id}`;
       const group = this.opts.registeredGroups()[chatJid];
       if (!group) return;
 
@@ -406,7 +394,7 @@ export class TelegramChannel implements Channel {
     const source = opts.source ?? 'channel';
 
     try {
-      const numericId = this.jidToChatId(jid);
+      const numericId = jid.slice(TG_PREFIX.length);
       const options = threadId
         ? { message_thread_id: parseInt(threadId, 10) }
         : {};
@@ -477,13 +465,7 @@ export class TelegramChannel implements Channel {
   }
 
   ownsJid(jid: string): boolean {
-    if (this.botName) return jid.startsWith(`tg:${this.botName}:`);
-    // Default bot: claim tg:<chatId> but not tg:<otherBot>:<chatId>.
-    // Telegram chat IDs are numeric (with optional leading '-' for groups),
-    // so a segment that parses as a number is a chat ID, not a bot name.
-    if (!jid.startsWith('tg:')) return false;
-    const rest = jid.slice(3);
-    return /^-?\d+$/.test(rest);
+    return jid.startsWith(TG_PREFIX);
   }
 
   async disconnect(): Promise<void> {
@@ -497,7 +479,7 @@ export class TelegramChannel implements Channel {
   async setTyping(jid: string, isTyping: boolean): Promise<void> {
     if (!this.bot || !isTyping) return;
     try {
-      const numericId = this.jidToChatId(jid);
+      const numericId = jid.slice(TG_PREFIX.length);
       await this.bot.api.sendChatAction(numericId, 'typing');
     } catch (err) {
       logger.debug({ jid, err }, 'Failed to send Telegram typing indicator');
@@ -506,40 +488,11 @@ export class TelegramChannel implements Channel {
 }
 
 registerChannel('telegram', (opts: ChannelOpts) => {
-  // Support multi-bot: TELEGRAM_BOT_TOKEN is the default (unnamed) bot,
-  // TELEGRAM_BOT_TOKEN_<NAME> adds a named bot whose JIDs are
-  // namespaced as tg:<name>:<chatId>. Bot names are lowercased.
-  const defaultEnv = readEnvFile(['TELEGRAM_BOT_TOKEN']);
-  const namedEnv = readEnvFileFiltered(
-    (k) => k.startsWith('TELEGRAM_BOT_TOKEN_') && k !== 'TELEGRAM_BOT_TOKEN',
-  );
-  const namedKeys = new Set([
-    ...Object.keys(process.env).filter((k) =>
-      k.startsWith('TELEGRAM_BOT_TOKEN_'),
-    ),
-    ...Object.keys(namedEnv),
-  ]);
-
-  const defaultToken =
-    process.env.TELEGRAM_BOT_TOKEN || defaultEnv.TELEGRAM_BOT_TOKEN || '';
-
-  const channels: Channel[] = [];
-  if (defaultToken) channels.push(new TelegramChannel(defaultToken, opts));
-
-  for (const key of namedKeys) {
-    const token = process.env[key] || namedEnv[key] || '';
-    if (!token) continue;
-    const botName = key
-      .slice('TELEGRAM_BOT_TOKEN_'.length)
-      .toLowerCase()
-      .replace(/[^a-z0-9-]/g, '-');
-    if (!botName) continue;
-    channels.push(new TelegramChannel(token, opts, botName));
-  }
-
-  if (channels.length === 0) {
+  const env = readEnvFile(['TELEGRAM_BOT_TOKEN']);
+  const token = process.env.TELEGRAM_BOT_TOKEN || env.TELEGRAM_BOT_TOKEN || '';
+  if (!token) {
     logger.warn('Telegram: TELEGRAM_BOT_TOKEN not set');
     return null;
   }
-  return channels;
+  return new TelegramChannel(token, opts);
 });
