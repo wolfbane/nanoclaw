@@ -73,7 +73,7 @@ interface CreateEventBody {
 }
 
 interface UpdateEventBody {
-  event_url: string;
+  object_url: string;
   title?: string;
   start?: string;
   end?: string;
@@ -433,23 +433,23 @@ function buildCaldavHandler({
 
     if (method === 'PATCH' && pathname === '/events') {
       const body = await readJsonBody<UpdateEventBody>(req);
-      if (!body.event_url) {
-        sendJson(res, 400, { error: 'event_url is required' });
+      if (!body.object_url) {
+        sendJson(res, 400, { error: 'object_url is required' });
         return 400;
       }
-      const cal = findCalendarForObject(calendars, body.event_url);
+      const cal = findCalendarForObject(calendars, body.object_url);
       if (!cal) {
         sendJson(res, 404, {
-          error: `no calendar owns url: ${body.event_url}`,
+          error: `no calendar owns url: ${body.object_url}`,
         });
         return 404;
       }
       const existing = await client.fetchCalendarObjects({
         calendar: cal,
-        objectUrls: [body.event_url],
+        objectUrls: [body.object_url],
       });
       if (existing.length === 0) {
-        sendJson(res, 404, { error: `event not found: ${body.event_url}` });
+        sendJson(res, 404, { error: `event not found: ${body.object_url}` });
         return 404;
       }
       const current = parseEventsFromObjects(existing)[0];
@@ -470,7 +470,7 @@ function buildCaldavHandler({
       });
       const response = await client.updateCalendarObject({
         calendarObject: {
-          url: body.event_url,
+          url: body.object_url,
           etag: existing[0].etag,
           data: iCalString,
         },
@@ -615,11 +615,10 @@ function buildCaldavHandler({
       method === 'DELETE' &&
       (pathname === '/events' || pathname === '/reminders')
     ) {
-      const bodyKey = pathname === '/events' ? 'event_url' : 'object_url';
-      const body = await readJsonBody<Record<string, string>>(req);
-      const url = body[bodyKey];
+      const body = await readJsonBody<{ object_url?: string }>(req);
+      const url = body.object_url;
       if (!url) {
-        sendJson(res, 400, { error: `${bodyKey} is required` });
+        sendJson(res, 400, { error: 'object_url is required' });
         return 400;
       }
       const response = await client.deleteCalendarObject({

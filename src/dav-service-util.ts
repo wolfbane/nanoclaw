@@ -163,27 +163,24 @@ export async function startICloudDavService<R>(opts: {
     initialResources: opts.initialResources,
   });
 
-  await loginManager.attemptLogin();
-
   const handle = opts.buildHandler({ client, loginManager });
-
   const server = createDavHttpServer(opts.serviceName, handle);
   server.on('close', () => loginManager.stop());
 
-  return new Promise((resolve, reject) => {
-    server.listen(opts.port, opts.host, () => {
-      logger.info(
-        {
-          host: opts.host,
-          port: opts.port,
-          loginStatus: loginManager.getStatus(),
-        },
-        `${opts.serviceName} service started`,
-      );
-      resolve(server);
-    });
+  // Start listening before awaiting login so containers that spawn during
+  // the ~3–5s iCloud login don't hit ECONNREFUSED. The handler already
+  // returns 503 while loginStatus !== 'ok'.
+  await new Promise<void>((resolve, reject) => {
+    server.listen(opts.port, opts.host, () => resolve());
     server.on('error', reject);
   });
+  logger.info(
+    { host: opts.host, port: opts.port },
+    `${opts.serviceName} service listening`,
+  );
+  void loginManager.attemptLogin();
+
+  return server;
 }
 
 export function createDavHttpServer(

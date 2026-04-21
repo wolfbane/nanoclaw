@@ -19,7 +19,7 @@ Single Node.js host process that owns channels, storage, scheduling, and a crede
 6. Agent-side IPC (writes to `/workspace/ipc/{messages,tasks}/` → `src/ipc.ts` watcher, polling every 1s) is how the agent sends proactive messages, schedules tasks, or registers groups. The host writes a delivery ack to `/workspace/ipc/acks/` per request; the agent's `mcp__nanoclaw__send_message` polls for the ack so failures surface at tool-call time instead of fire-and-forget.
 7. Every host→channel send is audited in the `outbound_messages` table with a `source` tag (`channel` | `mcp` | `task`). When adding a new outbound path, tag it correctly — this is the observability spine for tracking who sent what and when.
 
-**Main vs non-main group** (the primary privilege boundary): `isMain` set at registration, never mutable via IPC. Main reads the project root (RO), sees all groups/tasks, sends to any JID, can register/sync groups. Non-main is confined to its own folder + global (RO), can only schedule tasks for itself. Enforced in `src/ipc.ts` and `src/container-runner.ts`.
+**Main vs non-main group** (the primary privilege boundary): `isMain` set at registration, never mutable via IPC. Main reads the project root (RO), sees all groups/tasks, sends to any JID, can register/sync groups. Non-main is confined to its own folder + global (RO), can only schedule tasks for itself. A group's `container_config.additionalMounts` can surface extra host paths at `/workspace/extra/<name>`; these default to read-only, and RW additional mounts require `allowNonMainReadWrite: true` on the corresponding allowlist entry in `src/mount-security.ts`. Enforced in `src/ipc.ts`, `src/container-runner.ts`, and `src/mount-security.ts`.
 
 **Credential proxy** (`src/credential-proxy.ts`): Real credentials live in `.env` on the host; containers route outbound HTTPS through the proxy, which injects credentials per-request. Containers never see real tokens. `.env` is shadowed with `/dev/null` inside the container's project-root mount.
 
@@ -39,6 +39,8 @@ Single Node.js host process that owns channels, storage, scheduling, and a crede
 | `src/credential-proxy.ts` | Intercepts outbound requests, injects credentials |
 | `src/caldav-service.ts` | Host-side CalDAV service (iCloud calendar events + reminders/VTODOs) |
 | `src/carddav-service.ts` | Host-side CardDAV service (iCloud contacts, read-only) |
+| `src/dav-service-util.ts` | Shared DAV scaffolding: login manager, HTTP server, service-start factory |
+| `src/mount-security.ts` | `additionalMounts` allowlist + blocked-pattern check (enforces RW opt-in) |
 | `src/task-scheduler.ts` | Cron-driven scheduled task execution |
 | `src/db.ts` | SQLite operations |
 | `groups/{name}/CLAUDE.md` | Per-group memory (isolated, agent-editable) |

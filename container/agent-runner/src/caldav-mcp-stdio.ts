@@ -81,7 +81,7 @@ server.tool(
   'update_event',
   'Update fields on an existing event. Omitted fields stay unchanged.',
   {
-    event_url: z
+    object_url: z
       .string()
       .describe('Event URL returned by create_event or list_events'),
     title: z.string().optional(),
@@ -94,7 +94,7 @@ server.tool(
   async (args) =>
     call('PATCH', '/events', {
       body: {
-        event_url: args.event_url,
+        object_url: args.object_url,
         title: args.title,
         start: args.start_iso,
         end: args.end_iso,
@@ -109,10 +109,10 @@ server.tool(
   'delete_event',
   'Delete an event. Only call this after the user has explicitly confirmed deletion.',
   {
-    event_url: z.string().describe('Event URL to delete'),
+    object_url: z.string().describe('Event URL to delete'),
   },
   async (args) =>
-    call('DELETE', '/events', { body: { event_url: args.event_url } }),
+    call('DELETE', '/events', { body: { object_url: args.object_url } }),
 );
 
 server.tool(

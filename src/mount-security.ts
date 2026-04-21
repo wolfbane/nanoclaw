@@ -140,28 +140,18 @@ function getRealPath(p: string): string | null {
 }
 
 /**
- * Check if a path matches any blocked pattern
+ * Check if any path component exactly matches a blocked name.
+ * Exact-match avoids rejecting legitimate paths like
+ * `/Users/foo/credentials-docs/` or `/Users/foo/.environment/`.
  */
 function matchesBlockedPattern(
   realPath: string,
   blockedPatterns: string[],
 ): string | null {
   const pathParts = realPath.split(path.sep);
-
   for (const pattern of blockedPatterns) {
-    // Check if any path component matches the pattern
-    for (const part of pathParts) {
-      if (part === pattern || part.includes(pattern)) {
-        return pattern;
-      }
-    }
-
-    // Also check if the full path contains the pattern
-    if (realPath.includes(pattern)) {
-      return pattern;
-    }
+    if (pathParts.includes(pattern)) return pattern;
   }
-
   return null;
 }
 

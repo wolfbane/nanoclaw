@@ -199,9 +199,13 @@ def run_container(runtime: str, image: str, payload: dict,
     else:
         cmd += ["--user", f"{host_uid}:{host_gid}", "-e", "HOME=/home/node"]
 
-    # Pass env vars that downstream tools in the container may need.
-    # CENTS_HOME redirects ~/.cents lookups to the mounted cents-data dir.
-    cmd += ["-e", "CENTS_HOME=/workspace/extra/cents-data"]
+    # Only set CENTS_HOME when the cents-data additional mount is configured.
+    has_cents_mount = any(
+        str(m.get("containerPath", "")).strip("/") == "cents-data"
+        for m in (container_config or {}).get("additionalMounts", []) or []
+    )
+    if has_cents_mount:
+        cmd += ["-e", "CENTS_HOME=/workspace/extra/cents-data"]
     # Point the CalDAV MCP at the host-side service. Matches what
     # container-runner.ts injects for the service path — without this the
     # MCP returns "CalDAV not configured on the host" even when the service

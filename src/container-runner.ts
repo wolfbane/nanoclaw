@@ -291,11 +291,14 @@ function buildContainerArgs(
     `NANOCLAW_CARDDAV_SERVICE_URL=http://${CONTAINER_HOST_GATEWAY}:${CARDDAV_SERVICE_PORT}`,
   );
 
-  // Redirect cents's config/data dir to a mounted path. Only has effect
-  // when a `cents-data` additionalMount is present for the group (cents
-  // uses it via the CENTS_HOME env var added in its paths module); otherwise
-  // a no-op since cents isn't invoked.
-  args.push('-e', 'CENTS_HOME=/workspace/extra/cents-data');
+  // Only inject CENTS_HOME when the cents-data additional mount is actually
+  // present — otherwise the env var would point at a non-existent path.
+  const centsMount = mounts.find(
+    (m) => m.containerPath === '/workspace/extra/cents-data',
+  );
+  if (centsMount) {
+    args.push('-e', `CENTS_HOME=${centsMount.containerPath}`);
+  }
 
   // Mirror the host's auth method with a placeholder value.
   // API key mode: SDK sends x-api-key, proxy replaces with real key.

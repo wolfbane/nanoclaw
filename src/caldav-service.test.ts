@@ -338,7 +338,7 @@ describe('caldav-service', () => {
         headers: { 'content-type': 'application/json' },
       },
       JSON.stringify({
-        event_url: 'https://p01/main/event-1.ics',
+        object_url: 'https://p01/main/event-1.ics',
         title: 'New title',
       }),
     );
@@ -367,7 +367,7 @@ describe('caldav-service', () => {
         path: '/events',
         headers: { 'content-type': 'application/json' },
       },
-      JSON.stringify({ event_url: 'https://p01/main/event-2.ics' }),
+      JSON.stringify({ object_url: 'https://p01/main/event-2.ics' }),
     );
     expect(res.statusCode).toBe(200);
     expect(davClientState.lastDelete?.url).toBe('https://p01/main/event-2.ics');

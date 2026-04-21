@@ -26,6 +26,8 @@ export type DavServiceCaller = (
   options?: { query?: Record<string, string>; body?: unknown },
 ) => Promise<ToolResult>;
 
+const FETCH_TIMEOUT_MS = 30_000;
+
 export function makeDavCaller(
   serviceName: string,
   serviceUrl: string,
@@ -45,17 +47,25 @@ export function makeDavCaller(
     }
 
     const hasBody = options.body !== undefined;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
     let response: Response;
     try {
       response = await fetch(url, {
         method,
         headers: hasBody ? { 'content-type': 'application/json' } : {},
         body: hasBody ? JSON.stringify(options.body) : undefined,
+        signal: controller.signal,
       });
     } catch (err) {
+      const aborted = controller.signal.aborted;
       return errorResult(
-        `${serviceName} service unreachable at ${serviceUrl}: ${err instanceof Error ? err.message : String(err)}`,
+        aborted
+          ? `${serviceName} service timed out after ${FETCH_TIMEOUT_MS / 1000}s at ${serviceUrl}`
+          : `${serviceName} service unreachable at ${serviceUrl}: ${err instanceof Error ? err.message : String(err)}`,
       );
+    } finally {
+      clearTimeout(timer);
     }
 
     const text = await response.text();
