@@ -40,6 +40,35 @@ interface CalendarEvent {
   description?: string;
 }
 
+interface Reminder {
+  uid: string;
+  url: string;
+  etag?: string;
+  summary: string;
+  due?: string;
+  notes?: string;
+  priority?: number;
+  status: 'NEEDS-ACTION' | 'IN-PROCESS' | 'COMPLETED' | 'CANCELLED';
+  completed?: string;
+}
+
+interface CreateReminderBody {
+  calendar_url: string;
+  title: string;
+  due?: string;
+  notes?: string;
+  priority?: number;
+}
+
+interface UpdateReminderBody {
+  event_url: string;
+  title?: string;
+  due?: string | null;
+  notes?: string;
+  priority?: number;
+  completed?: boolean;
+}
+
 interface CreateEventBody {
   calendar_url: string;
   title: string;
@@ -136,6 +165,148 @@ function buildICalString(data: {
   if (data.notes) eventData.description = data.notes;
   cal.createEvent(eventData);
   return cal.toString();
+}
+
+function formatICalUtc(isoOrDate: string | Date): string {
+  const d = isoOrDate instanceof Date ? isoOrDate : new Date(isoOrDate);
+  // RFC 5545 UTC form: YYYYMMDDTHHMMSSZ
+  return d
+    .toISOString()
+    .replace(/[-:]/g, '')
+    .replace(/\.\d{3}/, '');
+}
+
+function escapeICalText(s: string): string {
+  // RFC 5545 §3.3.11: escape \\, newline, comma, semicolon.
+  return s
+    .replace(/\\/g, '\\\\')
+    .replace(/\r?\n/g, '\\n')
+    .replace(/,/g, '\\,')
+    .replace(/;/g, '\\;');
+}
+
+function buildVTodoICalString(data: {
+  uid: string;
+  title: string;
+  due?: string;
+  notes?: string;
+  priority?: number;
+  completed?: boolean;
+  completedAt?: string;
+}): string {
+  const now = formatICalUtc(new Date());
+  const lines: string[] = [
+    'BEGIN:VCALENDAR',
+    'VERSION:2.0',
+    'PRODID:-//NanoClaw//CalDAV//EN',
+    'BEGIN:VTODO',
+    `UID:${data.uid}`,
+    `DTSTAMP:${now}`,
+    `SUMMARY:${escapeICalText(data.title)}`,
+  ];
+  if (data.notes) lines.push(`DESCRIPTION:${escapeICalText(data.notes)}`);
+  if (data.due) lines.push(`DUE:${formatICalUtc(data.due)}`);
+  if (data.priority !== undefined) lines.push(`PRIORITY:${data.priority}`);
+  if (data.completed) {
+    lines.push('STATUS:COMPLETED');
+    lines.push('PERCENT-COMPLETE:100');
+    lines.push(`COMPLETED:${formatICalUtc(data.completedAt || new Date())}`);
+  } else {
+    lines.push('STATUS:NEEDS-ACTION');
+  }
+  lines.push('END:VTODO', 'END:VCALENDAR');
+  return lines.join('\r\n') + '\r\n';
+}
+
+// tsdav's default calendar-query filter asks for VEVENT only. iCloud returns
+// zero VTODO results with that filter, so we pass an explicit VTODO filter
+// for reminders endpoints.
+const VTODO_FILTERS = [
+  {
+    'comp-filter': {
+      _attributes: { name: 'VCALENDAR' },
+      'comp-filter': {
+        _attributes: { name: 'VTODO' },
+      },
+    },
+  },
+];
+
+function parseICalDateString(s: string): Date | undefined {
+  // RFC 5545 forms we care about:
+  //   YYYYMMDD                       (DATE)
+  //   YYYYMMDDTHHMMSSZ               (DATE-TIME, UTC)
+  //   YYYYMMDDTHHMMSS                (DATE-TIME, floating — treat as UTC)
+  const dateOnly = /^(\d{4})(\d{2})(\d{2})$/;
+  const dateTime = /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z?$/;
+  const m2 = dateTime.exec(s);
+  if (m2) {
+    const d = new Date(
+      Date.UTC(
+        Number(m2[1]),
+        Number(m2[2]) - 1,
+        Number(m2[3]),
+        Number(m2[4]),
+        Number(m2[5]),
+        Number(m2[6]),
+      ),
+    );
+    return isNaN(d.getTime()) ? undefined : d;
+  }
+  const m1 = dateOnly.exec(s);
+  if (m1) {
+    const d = new Date(
+      Date.UTC(Number(m1[1]), Number(m1[2]) - 1, Number(m1[3])),
+    );
+    return isNaN(d.getTime()) ? undefined : d;
+  }
+  return undefined;
+}
+
+function toDateOrUndefined(v: unknown): Date | undefined {
+  if (v instanceof Date && !isNaN(v.getTime())) return v;
+  if (typeof v !== 'string' || !v) return undefined;
+  // node-ical returns VTODO DUE/COMPLETED as raw iCal strings. Try that first,
+  // then fall back to ISO-8601 for anything else.
+  const iCal = parseICalDateString(v);
+  if (iCal) return iCal;
+  const d = new Date(v);
+  return isNaN(d.getTime()) ? undefined : d;
+}
+
+function parseRemindersFromObjects(objects: DAVCalendarObject[]): Reminder[] {
+  const reminders: Reminder[] = [];
+  for (const obj of objects) {
+    if (!obj.data || typeof obj.data !== 'string') continue;
+    let parsed: nodeIcal.CalendarResponse;
+    try {
+      parsed = nodeIcal.parseICS(obj.data);
+    } catch (err) {
+      logger.warn({ url: obj.url, err }, 'Failed to parse iCal reminder');
+      continue;
+    }
+    for (const key of Object.keys(parsed)) {
+      const c = parsed[key] as unknown as Record<string, unknown>;
+      if (c.type !== 'VTODO') continue;
+      const status =
+        (c.status as string | undefined)?.toUpperCase() || 'NEEDS-ACTION';
+      const dueDate = toDateOrUndefined(c.due);
+      const completedDate = toDateOrUndefined(c.completed);
+      reminders.push({
+        uid: String(c.uid || ''),
+        url: obj.url,
+        etag: obj.etag,
+        summary: String(c.summary || ''),
+        due: dueDate?.toISOString(),
+        notes: c.description ? String(c.description) : undefined,
+        priority:
+          typeof c.priority === 'number' ? (c.priority as number) : undefined,
+        status: status as Reminder['status'],
+        completed: completedDate?.toISOString(),
+      });
+    }
+  }
+  return reminders;
 }
 
 function parseEventsFromObjects(objects: DAVCalendarObject[]): CalendarEvent[] {
@@ -392,6 +563,164 @@ export async function startCaldavService(
       if (!response.ok) {
         sendJson(res, 502, {
           error: `iCloud rejected update: ${response.status} ${response.statusText}`,
+        });
+        return 502;
+      }
+      sendJson(res, 200, { ok: true });
+      return 200;
+    }
+
+    if (method === 'GET' && pathname === '/reminders') {
+      const calendarUrl = requestUrl.searchParams.get('calendar_url');
+      const includeCompleted =
+        requestUrl.searchParams.get('include_completed') === 'true';
+      if (!calendarUrl) {
+        sendJson(res, 400, { error: 'calendar_url is required' });
+        return 400;
+      }
+      const calendars = await fetchCalendarList();
+      const cal = findCalendarByUrl(calendars, calendarUrl);
+      if (!cal) {
+        sendJson(res, 404, { error: `calendar not found: ${calendarUrl}` });
+        return 404;
+      }
+      const objects = await client.fetchCalendarObjects({
+        calendar: cal,
+        filters: VTODO_FILTERS,
+      });
+      const all = parseRemindersFromObjects(objects);
+      const filtered = includeCompleted
+        ? all
+        : all.filter(
+            (r) => r.status !== 'COMPLETED' && r.status !== 'CANCELLED',
+          );
+      sendJson(res, 200, { reminders: filtered });
+      return 200;
+    }
+
+    if (method === 'POST' && pathname === '/reminders') {
+      const body = await readJsonBody<CreateReminderBody>(req);
+      if (!body.calendar_url || !body.title) {
+        sendJson(res, 400, { error: 'calendar_url and title are required' });
+        return 400;
+      }
+      const calendars = await fetchCalendarList();
+      const cal = findCalendarByUrl(calendars, body.calendar_url);
+      if (!cal) {
+        sendJson(res, 404, {
+          error: `calendar not found: ${body.calendar_url}`,
+        });
+        return 404;
+      }
+      const uid = generateUid();
+      const filename = eventFilename(uid);
+      const iCalString = buildVTodoICalString({
+        uid,
+        title: body.title,
+        due: body.due,
+        notes: body.notes,
+        priority: body.priority,
+      });
+      const response = await client.createCalendarObject({
+        calendar: cal,
+        filename,
+        iCalString,
+      });
+      if (!response.ok) {
+        sendJson(res, 502, {
+          error: `iCloud rejected create: ${response.status} ${response.statusText}`,
+        });
+        return 502;
+      }
+      sendJson(res, 201, { url: joinUrl(cal.url, filename), uid });
+      return 201;
+    }
+
+    if (method === 'PATCH' && pathname === '/reminders') {
+      const body = await readJsonBody<UpdateReminderBody>(req);
+      if (!body.event_url) {
+        sendJson(res, 400, { error: 'event_url is required' });
+        return 400;
+      }
+      const calendars = await fetchCalendarList();
+      const cal = findCalendarForObject(calendars, body.event_url);
+      if (!cal) {
+        sendJson(res, 404, {
+          error: `no calendar owns url: ${body.event_url}`,
+        });
+        return 404;
+      }
+      const existing = await client.fetchCalendarObjects({
+        calendar: cal,
+        objectUrls: [body.event_url],
+      });
+      if (existing.length === 0) {
+        sendJson(res, 404, { error: `reminder not found: ${body.event_url}` });
+        return 404;
+      }
+      const current = parseRemindersFromObjects(existing)[0];
+      if (!current) {
+        sendJson(res, 500, {
+          error: 'failed to parse current reminder for merge',
+        });
+        return 500;
+      }
+      const mergedCompleted =
+        body.completed !== undefined
+          ? body.completed
+          : current.status === 'COMPLETED';
+      const iCalString = buildVTodoICalString({
+        uid: current.uid,
+        title: body.title ?? current.summary,
+        due: body.due === null ? undefined : (body.due ?? current.due),
+        notes: body.notes ?? current.notes,
+        priority:
+          body.priority !== undefined ? body.priority : current.priority,
+        completed: mergedCompleted,
+        completedAt: mergedCompleted ? current.completed : undefined,
+      });
+      const response = await client.updateCalendarObject({
+        calendarObject: {
+          url: body.event_url,
+          etag: existing[0].etag,
+          data: iCalString,
+        },
+      });
+      if (!response.ok) {
+        sendJson(res, 502, {
+          error: `iCloud rejected update: ${response.status} ${response.statusText}`,
+        });
+        return 502;
+      }
+      sendJson(res, 200, { ok: true });
+      return 200;
+    }
+
+    if (method === 'DELETE' && pathname === '/reminders') {
+      const body = await readJsonBody<DeleteEventBody>(req);
+      if (!body.event_url) {
+        sendJson(res, 400, { error: 'event_url is required' });
+        return 400;
+      }
+      const calendars = await fetchCalendarList();
+      const cal = findCalendarForObject(calendars, body.event_url);
+      if (!cal) {
+        sendJson(res, 404, {
+          error: `no calendar owns url: ${body.event_url}`,
+        });
+        return 404;
+      }
+      const existing = await client.fetchCalendarObjects({
+        calendar: cal,
+        objectUrls: [body.event_url],
+      });
+      const etag = existing[0]?.etag;
+      const response = await client.deleteCalendarObject({
+        calendarObject: { url: body.event_url, etag, data: '' },
+      });
+      if (!response.ok) {
+        sendJson(res, 502, {
+          error: `iCloud rejected delete: ${response.status} ${response.statusText}`,
         });
         return 502;
       }

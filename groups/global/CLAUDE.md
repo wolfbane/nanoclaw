@@ -95,11 +95,12 @@ The roster:
 - **Calendar** — default personal calendar (events)
 - **Family** — shared with spouse; writes are visible to both people. **Always confirm before writing here.**
 - **Shared** — additional shared calendar. Confirm before writing.
-- **Reminders ⚠️** — iCloud Reminders list; read-only in practice, leave alone unless asked.
+- **Reminders ⚠️** — iCloud Reminders list. Use the `mcp__caldav__*_reminder` tools (not `*_event`) — these are VTODOs on the same calendar URL. Writable, but check with Matthew before creating reminders he didn't ask for; mutating someone else's reminders is intrusive.
 
 ### Rules
 
 - **Confirm before writing to any calendar.** Reads are free; writes require Matthew's OK unless he's explicitly pre-authorized a specific action (e.g. "go ahead and book").
+- **Events vs reminders.** `mcp__caldav__{list,create,update,delete}_event` acts on VEVENTs (entries in Inbox/Calendar/Family/Shared). `mcp__caldav__{list,create,update,delete}_reminder` acts on VTODOs (entries in the Reminders calendar). Picking the wrong pair returns empty lists — they're the same CalDAV URL but different iCalendar components.
 - **ISO-8601 with timezone on every timestamp.** The MCP rejects naked local times. Use `Z` (UTC) or an offset like `-04:00`. If Matthew says "at 3pm", resolve it against his timezone (`TZ` env var inside your container) before calling the tool.
 - **When resolving Inbox items**, either delete the event (if the task is fully done and the record adds no value) or append `✓ done: <what happened>` to the event notes and leave it. Prefer appending when the outcome might matter later (confirmation numbers, who you spoke to).
 - **Don't silently reshuffle** existing events. Propose moves; let Matthew confirm.

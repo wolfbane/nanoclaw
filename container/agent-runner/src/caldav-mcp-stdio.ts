@@ -182,5 +182,97 @@ server.tool(
   async (args) => call('DELETE', '/events', { body: { event_url: args.event_url } }),
 );
 
+server.tool(
+  'list_reminders',
+  'List iCloud Reminders (VTODO) on a reminders-list calendar. By default excludes completed/cancelled items; set include_completed=true to see everything.',
+  {
+    calendar_url: z
+      .string()
+      .describe('Reminders-list URL from list_calendars (iCloud exposes reminder lists alongside event calendars)'),
+    include_completed: z
+      .boolean()
+      .optional()
+      .describe('Include completed/cancelled reminders (default false)'),
+  },
+  async (args) =>
+    call('GET', '/reminders', {
+      query: {
+        calendar_url: args.calendar_url,
+        ...(args.include_completed ? { include_completed: 'true' } : {}),
+      },
+    }),
+);
+
+server.tool(
+  'create_reminder',
+  'Create a reminder (VTODO) on a reminders list. Only call this after the user has confirmed the list and title. Due date is optional; when set it must be ISO-8601 with timezone.',
+  {
+    calendar_url: z.string().describe('Target reminders-list URL'),
+    title: z.string().describe('Reminder title'),
+    due_iso: isoTimestamp
+      .optional()
+      .describe('Optional due date/time, ISO-8601 with timezone'),
+    notes: z.string().optional(),
+    priority: z
+      .number()
+      .int()
+      .min(0)
+      .max(9)
+      .optional()
+      .describe('Priority 0 (none) to 9 (lowest); 1 is highest'),
+  },
+  async (args) =>
+    call('POST', '/reminders', {
+      body: {
+        calendar_url: args.calendar_url,
+        title: args.title,
+        due: args.due_iso,
+        notes: args.notes,
+        priority: args.priority,
+      },
+    }),
+);
+
+server.tool(
+  'update_reminder',
+  'Update fields on a reminder, or mark it complete/incomplete via the completed flag. Omitted fields stay unchanged.',
+  {
+    event_url: z.string().describe('Reminder URL returned by create_reminder or list_reminders'),
+    title: z.string().optional(),
+    due_iso: isoTimestamp.optional(),
+    clear_due: z
+      .boolean()
+      .optional()
+      .describe('Set to true to remove an existing due date'),
+    notes: z.string().optional(),
+    priority: z.number().int().min(0).max(9).optional(),
+    completed: z
+      .boolean()
+      .optional()
+      .describe('true to mark complete, false to reopen'),
+  },
+  async (args) =>
+    call('PATCH', '/reminders', {
+      body: {
+        event_url: args.event_url,
+        title: args.title,
+        due: args.clear_due ? null : args.due_iso,
+        notes: args.notes,
+        priority: args.priority,
+        completed: args.completed,
+      },
+    }),
+);
+
+server.tool(
+  'delete_reminder',
+  'Delete a reminder. Only call this after the user has explicitly confirmed deletion.',
+  {
+    event_url: z.string().describe('Reminder URL to delete'),
+  },
+  async (args) =>
+    call('DELETE', '/reminders', { body: { event_url: args.event_url } }),
+);
+
 const transport = new StdioServerTransport();
 await server.connect(transport);

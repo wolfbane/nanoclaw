@@ -37,7 +37,7 @@ Single Node.js host process that owns channels, storage, scheduling, and a crede
 | `src/config.ts` | Trigger pattern, paths, `NANOCLAW_DATA_DIR` resolution |
 | `src/container-runner.ts` | Spawns agent containers, mounts, MessageStream piping |
 | `src/credential-proxy.ts` | Intercepts outbound requests, injects credentials |
-| `src/caldav-service.ts` | Host-side CalDAV HTTP service (iCloud calendar access) |
+| `src/caldav-service.ts` | Host-side CalDAV service (iCloud calendar events + reminders/VTODOs) |
 | `src/task-scheduler.ts` | Cron-driven scheduled task execution |
 | `src/db.ts` | SQLite operations |
 | `groups/{name}/CLAUDE.md` | Per-group memory (isolated, agent-editable) |
