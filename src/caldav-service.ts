@@ -12,13 +12,12 @@ import nodeIcal from 'node-ical';
 import { DAVCalendar, DAVCalendarObject, DAVClient } from 'tsdav';
 
 import {
-  createDavHttpServer,
-  createDavLoginManager,
+  DavLoginManager,
   extractDisplayName,
   readJsonBody,
   sendJson,
+  startICloudDavService,
 } from './dav-service-util.js';
-import { readEnvFile } from './env.js';
 import { logger } from './logger.js';
 
 interface CalendarEvent {
@@ -311,44 +310,33 @@ function joinUrl(base: string, filename: string): string {
   return base.endsWith('/') ? `${base}${filename}` : `${base}/${filename}`;
 }
 
-export async function startCaldavService(
+export function startCaldavService(
   port: number,
   host: string,
 ): Promise<Server | null> {
-  const secrets = readEnvFile(['ICLOUD_APPLE_ID', 'ICLOUD_APP_PASSWORD']);
-  if (!secrets.ICLOUD_APPLE_ID || !secrets.ICLOUD_APP_PASSWORD) {
-    logger.info(
-      'CalDAV service disabled: ICLOUD_APPLE_ID and ICLOUD_APP_PASSWORD must both be set in .env',
-    );
-    return null;
-  }
-
-  const client = new DAVClient({
-    serverUrl: 'https://caldav.icloud.com',
-    credentials: {
-      username: secrets.ICLOUD_APPLE_ID,
-      password: secrets.ICLOUD_APP_PASSWORD,
-    },
-    authMethod: 'Basic',
-    defaultAccountType: 'caldav',
-  });
-
-  const loginManager = createDavLoginManager<DAVCalendar[]>({
-    client,
+  return startICloudDavService<DAVCalendar[]>({
     serviceName: 'CalDAV',
-    fetchResources: () => client.fetchCalendars(),
+    serverUrl: 'https://caldav.icloud.com',
+    accountType: 'caldav',
+    port,
+    host,
+    fetchResources: (client) => client.fetchCalendars(),
     initialResources: [],
+    buildHandler: ({ client, loginManager, host, port }) =>
+      buildCaldavHandler(client, loginManager, host, port),
   });
+}
 
-  await loginManager.attemptLogin();
-
+function buildCaldavHandler(
+  client: DAVClient,
+  loginManager: DavLoginManager<DAVCalendar[]>,
+  host: string,
+  port: number,
+): (req: IncomingMessage, res: ServerResponse) => Promise<number> {
   const fetchCalendarList = async (): Promise<DAVCalendar[]> =>
     loginManager.getResources();
 
-  const handle = async (
-    req: IncomingMessage,
-    res: ServerResponse,
-  ): Promise<number> => {
+  return async (req: IncomingMessage, res: ServerResponse): Promise<number> => {
     const requestUrl = new URL(req.url || '/', `http://${host}:${port}`);
     const pathname = requestUrl.pathname;
     const method = req.method || 'GET';
@@ -633,39 +621,10 @@ export async function startCaldavService(
       return 200;
     }
 
-    if (method === 'DELETE' && pathname === '/reminders') {
-      const body = await readJsonBody<DeleteCalDavObjectBody>(req);
-      if (!body.event_url) {
-        sendJson(res, 400, { error: 'event_url is required' });
-        return 400;
-      }
-      const calendars = await fetchCalendarList();
-      const cal = findCalendarForObject(calendars, body.event_url);
-      if (!cal) {
-        sendJson(res, 404, {
-          error: `no calendar owns url: ${body.event_url}`,
-        });
-        return 404;
-      }
-      const existing = await client.fetchCalendarObjects({
-        calendar: cal,
-        objectUrls: [body.event_url],
-      });
-      const etag = existing[0]?.etag;
-      const response = await client.deleteCalendarObject({
-        calendarObject: { url: body.event_url, etag, data: '' },
-      });
-      if (!response.ok) {
-        sendJson(res, 502, {
-          error: `iCloud rejected delete: ${response.status} ${response.statusText}`,
-        });
-        return 502;
-      }
-      sendJson(res, 200, { ok: true });
-      return 200;
-    }
-
-    if (method === 'DELETE' && pathname === '/events') {
+    if (
+      method === 'DELETE' &&
+      (pathname === '/events' || pathname === '/reminders')
+    ) {
       const body = await readJsonBody<DeleteCalDavObjectBody>(req);
       if (!body.event_url) {
         sendJson(res, 400, { error: 'event_url is required' });
@@ -711,18 +670,4 @@ export async function startCaldavService(
     sendJson(res, 404, { error: 'not found' });
     return 404;
   };
-
-  const server = createDavHttpServer('CalDAV', handle);
-  server.on('close', () => loginManager.stop());
-
-  return new Promise((resolve, reject) => {
-    server.listen(port, host, () => {
-      logger.info(
-        { host, port, loginStatus: loginManager.getStatus() },
-        'CalDAV service started',
-      );
-      resolve(server);
-    });
-    server.on('error', reject);
-  });
 }

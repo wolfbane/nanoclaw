@@ -1,7 +1,8 @@
 import { createServer, IncomingMessage, Server, ServerResponse } from 'http';
 
-import type { DAVClient } from 'tsdav';
+import { DAVClient } from 'tsdav';
 
+import { readEnvFile } from './env.js';
 import { logger } from './logger.js';
 
 export function sendJson(
@@ -53,14 +54,13 @@ export interface DavLoginManager<R> {
   stop(): void;
 }
 
-const DEFAULT_RETRY_INTERVAL_MS = 60_000;
+const RETRY_INTERVAL_MS = 60_000;
 
 export function createDavLoginManager<R>(opts: {
   client: DAVClient;
   serviceName: string;
   fetchResources: () => Promise<R>;
   initialResources: R;
-  retryIntervalMs?: number;
 }): DavLoginManager<R> {
   let status: LoginStatus = 'pending';
   let lastError: string | undefined;
@@ -105,7 +105,7 @@ export function createDavLoginManager<R>(opts: {
 
   const retryTimer = setInterval(() => {
     if (status !== 'ok') void attemptLogin();
-  }, opts.retryIntervalMs ?? DEFAULT_RETRY_INTERVAL_MS);
+  }, RETRY_INTERVAL_MS);
   retryTimer.unref();
 
   return {
@@ -115,6 +115,78 @@ export function createDavLoginManager<R>(opts: {
     getResources: () => resources,
     stop: () => clearInterval(retryTimer),
   };
+}
+
+export interface ICloudDavServiceContext<R> {
+  client: DAVClient;
+  loginManager: DavLoginManager<R>;
+  host: string;
+  port: number;
+}
+
+export async function startICloudDavService<R>(opts: {
+  serviceName: string;
+  serverUrl: string;
+  accountType: 'caldav' | 'carddav';
+  port: number;
+  host: string;
+  fetchResources: (client: DAVClient) => Promise<R>;
+  initialResources: R;
+  buildHandler: (
+    ctx: ICloudDavServiceContext<R>,
+  ) => (req: IncomingMessage, res: ServerResponse) => Promise<number>;
+}): Promise<Server | null> {
+  const secrets = readEnvFile(['ICLOUD_APPLE_ID', 'ICLOUD_APP_PASSWORD']);
+  if (!secrets.ICLOUD_APPLE_ID || !secrets.ICLOUD_APP_PASSWORD) {
+    logger.info(
+      `${opts.serviceName} service disabled: ICLOUD_APPLE_ID and ICLOUD_APP_PASSWORD must both be set in .env`,
+    );
+    return null;
+  }
+
+  const client = new DAVClient({
+    serverUrl: opts.serverUrl,
+    credentials: {
+      username: secrets.ICLOUD_APPLE_ID,
+      password: secrets.ICLOUD_APP_PASSWORD,
+    },
+    authMethod: 'Basic',
+    defaultAccountType: opts.accountType,
+  });
+
+  const loginManager = createDavLoginManager<R>({
+    client,
+    serviceName: opts.serviceName,
+    fetchResources: () => opts.fetchResources(client),
+    initialResources: opts.initialResources,
+  });
+
+  await loginManager.attemptLogin();
+
+  const handle = opts.buildHandler({
+    client,
+    loginManager,
+    host: opts.host,
+    port: opts.port,
+  });
+
+  const server = createDavHttpServer(opts.serviceName, handle);
+  server.on('close', () => loginManager.stop());
+
+  return new Promise((resolve, reject) => {
+    server.listen(opts.port, opts.host, () => {
+      logger.info(
+        {
+          host: opts.host,
+          port: opts.port,
+          loginStatus: loginManager.getStatus(),
+        },
+        `${opts.serviceName} service started`,
+      );
+      resolve(server);
+    });
+    server.on('error', reject);
+  });
 }
 
 export function createDavHttpServer(

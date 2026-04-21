@@ -8,12 +8,11 @@ import { URL } from 'url';
 import { DAVAddressBook, DAVClient, DAVObject } from 'tsdav';
 
 import {
-  createDavHttpServer,
-  createDavLoginManager,
+  DavLoginManager,
   extractDisplayName,
   sendJson,
+  startICloudDavService,
 } from './dav-service-util.js';
-import { readEnvFile } from './env.js';
 import { logger } from './logger.js';
 
 interface ContactSummary {
@@ -198,42 +197,35 @@ function compareContacts(a: ContactSummary, b: ContactSummary): number {
   return a.url.localeCompare(b.url);
 }
 
-export async function startCarddavService(
+export function startCarddavService(
   port: number,
   host: string,
 ): Promise<Server | null> {
-  const secrets = readEnvFile(['ICLOUD_APPLE_ID', 'ICLOUD_APP_PASSWORD']);
-  if (!secrets.ICLOUD_APPLE_ID || !secrets.ICLOUD_APP_PASSWORD) {
-    logger.info(
-      'CardDAV service disabled: ICLOUD_APPLE_ID and ICLOUD_APP_PASSWORD must both be set in .env',
-    );
-    return null;
-  }
-
-  const client = new DAVClient({
-    serverUrl: 'https://contacts.icloud.com',
-    credentials: {
-      username: secrets.ICLOUD_APPLE_ID,
-      password: secrets.ICLOUD_APP_PASSWORD,
-    },
-    authMethod: 'Basic',
-    defaultAccountType: 'carddav',
-  });
-
-  const loginManager = createDavLoginManager<DAVAddressBook[]>({
-    client,
+  return startICloudDavService<DAVAddressBook[]>({
     serviceName: 'CardDAV',
-    fetchResources: () => client.fetchAddressBooks(),
+    serverUrl: 'https://contacts.icloud.com',
+    accountType: 'carddav',
+    port,
+    host,
+    fetchResources: (client) => client.fetchAddressBooks(),
     initialResources: [],
+    buildHandler: ({ client, loginManager, host, port }) =>
+      buildCarddavHandler(client, loginManager, host, port),
   });
+}
 
-  // 5-minute cache is a compromise between search latency and visibility of
-  // contacts added on another device mid-session.
-  const CONTACTS_TTL_MS = 5 * 60 * 1000;
+// 5-minute cache is a compromise between search latency and visibility of
+// contacts added on another device mid-session.
+const CONTACTS_TTL_MS = 5 * 60 * 1000;
+
+function buildCarddavHandler(
+  client: DAVClient,
+  loginManager: DavLoginManager<DAVAddressBook[]>,
+  host: string,
+  port: number,
+): (req: IncomingMessage, res: ServerResponse) => Promise<number> {
   let cachedContacts: ContactSummary[] | null = null;
   let cachedAt = 0;
-
-  await loginManager.attemptLogin();
 
   const loadAllContacts = async (force = false): Promise<ContactSummary[]> => {
     const now = Date.now();
@@ -252,10 +244,7 @@ export async function startCarddavService(
     return all;
   };
 
-  const handle = async (
-    req: IncomingMessage,
-    res: ServerResponse,
-  ): Promise<number> => {
+  return async (req: IncomingMessage, res: ServerResponse): Promise<number> => {
     const requestUrl = new URL(req.url || '/', `http://${host}:${port}`);
     const pathname = requestUrl.pathname;
     const method = req.method || 'GET';
@@ -324,18 +313,4 @@ export async function startCarddavService(
     sendJson(res, 404, { error: 'not found' });
     return 404;
   };
-
-  const server = createDavHttpServer('CardDAV', handle);
-  server.on('close', () => loginManager.stop());
-
-  return new Promise((resolve, reject) => {
-    server.listen(port, host, () => {
-      logger.info(
-        { host, port, loginStatus: loginManager.getStatus() },
-        'CardDAV service started',
-      );
-      resolve(server);
-    });
-    server.on('error', reject);
-  });
 }
