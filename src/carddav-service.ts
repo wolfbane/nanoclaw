@@ -1,6 +1,6 @@
 /**
- * Host-side CardDAV service for iCloud contacts. Read-only. Same
- * host-side-service pattern as src/caldav-service.ts.
+ * Host-side CardDAV service for iCloud contacts. Same host-side-service
+ * pattern as src/caldav-service.ts.
  */
 import { IncomingMessage, Server, ServerResponse } from 'http';
 import { URL } from 'url';
@@ -11,22 +11,56 @@ import {
   DavLoginManager,
   REQUEST_URL_BASE,
   extractDisplayName,
+  readJsonBody,
   sendJson,
   startICloudDavService,
 } from './dav-service-util.js';
 import { logger } from './logger.js';
+
+interface ContactPhoneOrEmail {
+  type?: string;
+  value: string;
+}
 
 interface ContactSummary {
   url: string;
   etag?: string;
   uid?: string;
   full_name: string;
+  given_name?: string;
+  family_name?: string;
   organization?: string;
   title?: string;
-  phones: { type?: string; value: string }[];
-  emails: { type?: string; value: string }[];
+  phones: ContactPhoneOrEmail[];
+  emails: ContactPhoneOrEmail[];
   birthday?: string;
   notes?: string;
+}
+
+interface CreateContactBody {
+  address_book_url: string;
+  full_name: string;
+  given_name?: string;
+  family_name?: string;
+  organization?: string;
+  title?: string;
+  phones?: ContactPhoneOrEmail[];
+  emails?: ContactPhoneOrEmail[];
+  birthday?: string;
+  notes?: string;
+}
+
+interface UpdateContactBody {
+  object_url: string;
+  full_name?: string;
+  given_name?: string | null;
+  family_name?: string | null;
+  organization?: string | null;
+  title?: string | null;
+  phones?: ContactPhoneOrEmail[];
+  emails?: ContactPhoneOrEmail[];
+  birthday?: string | null;
+  notes?: string | null;
 }
 
 // Minimal vCard 3.0/4.0 parser: handles folded lines (RFC 6350 §3.2) and
@@ -107,15 +141,17 @@ function parseVCard(raw: string): ContactSummary | null {
       case 'FN':
         if (!contact.full_name) contact.full_name = decoded;
         break;
-      case 'N':
+      case 'N': {
         // Structured name "Family;Given;Additional;Prefix;Suffix".
-        // Only use it as a fallback when FN is missing.
+        const parts = decoded.split(';').map((s) => s.trim());
+        const [family, given] = parts;
+        if (family) contact.family_name = family;
+        if (given) contact.given_name = given;
         if (!contact.full_name) {
-          const parts = decoded.split(';').map((s) => s.trim());
-          const [family, given] = parts;
           contact.full_name = [given, family].filter(Boolean).join(' ');
         }
         break;
+      }
       case 'TEL':
         contact.phones.push({ type: pickType(params), value: decoded });
         break;
@@ -199,6 +235,100 @@ function compareContacts(a: ContactSummary, b: ContactSummary): number {
   const bn = b.full_name || '';
   if (an !== bn) return an.localeCompare(bn);
   return a.url.localeCompare(b.url);
+}
+
+function escapeVCardText(s: string): string {
+  // RFC 6350 §3.4: escape \\, newline, comma, semicolon.
+  return s
+    .replace(/\\/g, '\\\\')
+    .replace(/\r?\n/g, '\\n')
+    .replace(/,/g, '\\,')
+    .replace(/;/g, '\\;');
+}
+
+function buildVCard(data: {
+  uid: string;
+  full_name: string;
+  given_name?: string;
+  family_name?: string;
+  organization?: string;
+  title?: string;
+  phones?: ContactPhoneOrEmail[];
+  emails?: ContactPhoneOrEmail[];
+  birthday?: string;
+  notes?: string;
+}): string {
+  const lines: string[] = [
+    'BEGIN:VCARD',
+    'VERSION:3.0',
+    `UID:${data.uid}`,
+    `FN:${escapeVCardText(data.full_name)}`,
+  ];
+  if (data.family_name || data.given_name) {
+    const family = data.family_name ? escapeVCardText(data.family_name) : '';
+    const given = data.given_name ? escapeVCardText(data.given_name) : '';
+    lines.push(`N:${family};${given};;;`);
+  }
+  if (data.organization) {
+    lines.push(`ORG:${escapeVCardText(data.organization)}`);
+  }
+  if (data.title) {
+    lines.push(`TITLE:${escapeVCardText(data.title)}`);
+  }
+  for (const p of data.phones ?? []) {
+    if (!p.value) continue;
+    const type = p.type ? `;TYPE=${p.type.toUpperCase()}` : '';
+    lines.push(`TEL${type}:${escapeVCardText(p.value)}`);
+  }
+  for (const e of data.emails ?? []) {
+    if (!e.value) continue;
+    const type = e.type ? `;TYPE=${e.type.toUpperCase()}` : '';
+    lines.push(`EMAIL${type}:${escapeVCardText(e.value)}`);
+  }
+  if (data.birthday) {
+    lines.push(`BDAY:${escapeVCardText(data.birthday)}`);
+  }
+  if (data.notes) {
+    lines.push(`NOTE:${escapeVCardText(data.notes)}`);
+  }
+  lines.push('END:VCARD');
+  return lines.join('\r\n') + '\r\n';
+}
+
+function generateUid(): string {
+  return `nc-${Date.now()}-${Math.random().toString(36).slice(2, 10)}@nanoclaw`;
+}
+
+function vCardFilename(uid: string): string {
+  return `${uid.replace(/[^a-zA-Z0-9-]/g, '-')}.vcf`;
+}
+
+function joinUrl(base: string, filename: string): string {
+  return base.endsWith('/') ? `${base}${filename}` : `${base}/${filename}`;
+}
+
+function findAddressBookByUrl(
+  books: DAVAddressBook[],
+  url: string,
+): DAVAddressBook | undefined {
+  return books.find((b) => b.url === url);
+}
+
+function findAddressBookForObject(
+  books: DAVAddressBook[],
+  objectUrl: string,
+): DAVAddressBook | undefined {
+  return books.find((b) => objectUrl.startsWith(b.url));
+}
+
+// `null` means "clear", `undefined` means "leave unchanged".
+function mergeNullable<T>(
+  incoming: T | null | undefined,
+  current: T | undefined,
+): T | undefined {
+  if (incoming === null) return undefined;
+  if (incoming === undefined) return current;
+  return incoming;
 }
 
 export function startCarddavService(
@@ -305,6 +435,111 @@ function buildCarddavHandler({
         returned: Math.min(limit, filtered.length),
         contacts: filtered.slice(0, limit),
       });
+      return 200;
+    }
+
+    if (method === 'POST' && pathname === '/contacts') {
+      const body = await readJsonBody<CreateContactBody>(req);
+      if (!body.address_book_url || !body.full_name) {
+        sendJson(res, 400, {
+          error: 'address_book_url and full_name are required',
+        });
+        return 400;
+      }
+      const book = findAddressBookByUrl(addressBooks, body.address_book_url);
+      if (!book) {
+        sendJson(res, 404, {
+          error: `address book not found: ${body.address_book_url}`,
+        });
+        return 404;
+      }
+      const uid = generateUid();
+      const filename = vCardFilename(uid);
+      const vCardString = buildVCard({
+        uid,
+        full_name: body.full_name,
+        given_name: body.given_name,
+        family_name: body.family_name,
+        organization: body.organization,
+        title: body.title,
+        phones: body.phones,
+        emails: body.emails,
+        birthday: body.birthday,
+        notes: body.notes,
+      });
+      const response = await client.createVCard({
+        addressBook: book,
+        filename,
+        vCardString,
+      });
+      if (!response.ok) {
+        sendJson(res, 502, {
+          error: `iCloud rejected create: ${response.status} ${response.statusText}`,
+        });
+        return 502;
+      }
+      cachedContacts = null;
+      sendJson(res, 201, { url: joinUrl(book.url, filename), uid });
+      return 201;
+    }
+
+    if (method === 'PATCH' && pathname === '/contacts') {
+      const body = await readJsonBody<UpdateContactBody>(req);
+      if (!body.object_url) {
+        sendJson(res, 400, { error: 'object_url is required' });
+        return 400;
+      }
+      const book = findAddressBookForObject(addressBooks, body.object_url);
+      if (!book) {
+        sendJson(res, 404, {
+          error: `no address book owns url: ${body.object_url}`,
+        });
+        return 404;
+      }
+      const existing = await client.fetchVCards({
+        addressBook: book,
+        objectUrls: [body.object_url],
+      });
+      if (existing.length === 0) {
+        sendJson(res, 404, {
+          error: `contact not found: ${body.object_url}`,
+        });
+        return 404;
+      }
+      const current = parseContactsFromObjects(existing)[0];
+      if (!current) {
+        sendJson(res, 500, {
+          error: 'failed to parse current contact for merge',
+        });
+        return 500;
+      }
+      const vCardString = buildVCard({
+        uid: current.uid || generateUid(),
+        full_name: body.full_name ?? current.full_name,
+        given_name: mergeNullable(body.given_name, current.given_name),
+        family_name: mergeNullable(body.family_name, current.family_name),
+        organization: mergeNullable(body.organization, current.organization),
+        title: mergeNullable(body.title, current.title),
+        phones: body.phones ?? current.phones,
+        emails: body.emails ?? current.emails,
+        birthday: mergeNullable(body.birthday, current.birthday),
+        notes: mergeNullable(body.notes, current.notes),
+      });
+      const response = await client.updateVCard({
+        vCard: {
+          url: body.object_url,
+          etag: existing[0].etag,
+          data: vCardString,
+        },
+      });
+      if (!response.ok) {
+        sendJson(res, 502, {
+          error: `iCloud rejected update: ${response.status} ${response.statusText}`,
+        });
+        return 502;
+      }
+      cachedContacts = null;
+      sendJson(res, 200, { ok: true });
       return 200;
     }
 
