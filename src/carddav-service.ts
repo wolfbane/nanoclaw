@@ -238,12 +238,20 @@ function compareContacts(a: ContactSummary, b: ContactSummary): number {
 }
 
 function escapeVCardText(s: string): string {
-  // RFC 6350 §3.4: escape \\, newline, comma, semicolon.
+  // RFC 6350 §3.4: escape \\, newline, comma, semicolon. Standalone CR also
+  // gets folded into \n so it can never break the CRLF line structure.
   return s
     .replace(/\\/g, '\\\\')
-    .replace(/\r?\n/g, '\\n')
+    .replace(/\r\n|\r|\n/g, '\\n')
     .replace(/,/g, '\\,')
     .replace(/;/g, '\\;');
+}
+
+// vCard params live before the ":" and are delimited by ";" / ",". Anything
+// outside [A-Za-z0-9-] is dropped to prevent a user-supplied label like
+// `cell:INJECTED` from breaking out of the TYPE parameter.
+function sanitizeTypeParam(type: string): string {
+  return type.replace(/[^A-Za-z0-9-]/g, '').toUpperCase();
 }
 
 function buildVCard(data: {
@@ -277,13 +285,13 @@ function buildVCard(data: {
   }
   for (const p of data.phones ?? []) {
     if (!p.value) continue;
-    const type = p.type ? `;TYPE=${p.type.toUpperCase()}` : '';
-    lines.push(`TEL${type}:${escapeVCardText(p.value)}`);
+    const t = p.type ? sanitizeTypeParam(p.type) : '';
+    lines.push(`TEL${t ? `;TYPE=${t}` : ''}:${escapeVCardText(p.value)}`);
   }
   for (const e of data.emails ?? []) {
     if (!e.value) continue;
-    const type = e.type ? `;TYPE=${e.type.toUpperCase()}` : '';
-    lines.push(`EMAIL${type}:${escapeVCardText(e.value)}`);
+    const t = e.type ? sanitizeTypeParam(e.type) : '';
+    lines.push(`EMAIL${t ? `;TYPE=${t}` : ''}:${escapeVCardText(e.value)}`);
   }
   if (data.birthday) {
     lines.push(`BDAY:${escapeVCardText(data.birthday)}`);
@@ -361,12 +369,23 @@ function buildCarddavHandler({
   let cachedContacts: ContactSummary[] | null = null;
   let cachedAt = 0;
   let inFlight: Promise<ContactSummary[]> | null = null;
+  // Bumped on every mutation; an in-flight load only writes back if the
+  // generation it captured at start is still current. Without this, a load
+  // started just before a successful POST/PATCH would re-cache stale data
+  // and hide the new contact for the rest of the TTL.
+  let cacheGeneration = 0;
+
+  const invalidateCache = (): void => {
+    cachedContacts = null;
+    cacheGeneration++;
+  };
 
   const loadAllContacts = async (): Promise<ContactSummary[]> => {
     if (cachedContacts && Date.now() - cachedAt < CONTACTS_TTL_MS) {
       return cachedContacts;
     }
     if (inFlight) return inFlight;
+    const startGeneration = cacheGeneration;
     inFlight = (async () => {
       const perBook = await Promise.all(
         loginManager
@@ -375,8 +394,10 @@ function buildCarddavHandler({
       );
       const all = perBook.flatMap(parseContactsFromObjects);
       all.sort(compareContacts);
-      cachedContacts = all;
-      cachedAt = Date.now();
+      if (cacheGeneration === startGeneration) {
+        cachedContacts = all;
+        cachedAt = Date.now();
+      }
       return all;
     })().finally(() => {
       inFlight = null;
@@ -478,7 +499,7 @@ function buildCarddavHandler({
         });
         return 502;
       }
-      cachedContacts = null;
+      invalidateCache();
       sendJson(res, 201, { url: joinUrl(book.url, filename), uid });
       return 201;
     }
@@ -538,14 +559,14 @@ function buildCarddavHandler({
         });
         return 502;
       }
-      cachedContacts = null;
+      invalidateCache();
       sendJson(res, 200, { ok: true });
       return 200;
     }
 
     if (method === 'POST' && pathname === '/refresh') {
       await loginManager.attemptLogin();
-      cachedContacts = null;
+      invalidateCache();
       const postStatus = loginManager.getStatus();
       sendJson(res, 200, {
         ok: postStatus === 'ok',
