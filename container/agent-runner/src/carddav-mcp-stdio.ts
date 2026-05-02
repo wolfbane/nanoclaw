@@ -78,21 +78,7 @@ server.tool(
     birthday: z.string().optional().describe('Birthday, ideally YYYY-MM-DD'),
     notes: z.string().optional(),
   },
-  async (args) =>
-    call('POST', '/contacts', {
-      body: {
-        address_book_url: args.address_book_url,
-        full_name: args.full_name,
-        given_name: args.given_name,
-        family_name: args.family_name,
-        organization: args.organization,
-        title: args.title,
-        phones: args.phones,
-        emails: args.emails,
-        birthday: args.birthday,
-        notes: args.notes,
-      },
-    }),
+  async (args) => call('POST', '/contacts', { body: args }),
 );
 
 server.tool(
@@ -118,21 +104,7 @@ server.tool(
     birthday: z.string().nullable().optional(),
     notes: z.string().nullable().optional(),
   },
-  async (args) =>
-    call('PATCH', '/contacts', {
-      body: {
-        object_url: args.object_url,
-        full_name: args.full_name,
-        given_name: args.given_name,
-        family_name: args.family_name,
-        organization: args.organization,
-        title: args.title,
-        phones: args.phones,
-        emails: args.emails,
-        birthday: args.birthday,
-        notes: args.notes,
-      },
-    }),
+  async (args) => call('PATCH', '/contacts', { body: args }),
 );
 
 server.tool(

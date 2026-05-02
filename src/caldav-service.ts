@@ -14,7 +14,13 @@ import { DAVCalendar, DAVCalendarObject, DAVClient } from 'tsdav';
 import {
   DavLoginManager,
   REQUEST_URL_BASE,
+  davFilename,
+  escapeDavText,
   extractDisplayName,
+  findResourceByUrl,
+  findResourceOwningUrl,
+  generateDavUid,
+  joinDavUrl,
   readJsonBody,
   sendJson,
   startICloudDavService,
@@ -82,20 +88,6 @@ interface UpdateEventBody {
   notes?: string;
 }
 
-function findCalendarByUrl(
-  calendars: DAVCalendar[],
-  url: string,
-): DAVCalendar | undefined {
-  return calendars.find((c) => c.url === url);
-}
-
-function findCalendarForObject(
-  calendars: DAVCalendar[],
-  objectUrl: string,
-): DAVCalendar | undefined {
-  return calendars.find((c) => objectUrl.startsWith(c.url));
-}
-
 function buildICalString(data: {
   title: string;
   start: string;
@@ -127,15 +119,6 @@ function formatICalUtc(isoOrDate: string | Date): string {
     .replace(/\.\d{3}/, '');
 }
 
-function escapeICalText(s: string): string {
-  // RFC 5545 §3.3.11: escape \\, newline, comma, semicolon.
-  return s
-    .replace(/\\/g, '\\\\')
-    .replace(/\r?\n/g, '\\n')
-    .replace(/,/g, '\\,')
-    .replace(/;/g, '\\;');
-}
-
 function buildVTodoICalString(data: {
   uid: string;
   title: string;
@@ -153,9 +136,9 @@ function buildVTodoICalString(data: {
     'BEGIN:VTODO',
     `UID:${data.uid}`,
     `DTSTAMP:${now}`,
-    `SUMMARY:${escapeICalText(data.title)}`,
+    `SUMMARY:${escapeDavText(data.title)}`,
   ];
-  if (data.notes) lines.push(`DESCRIPTION:${escapeICalText(data.notes)}`);
+  if (data.notes) lines.push(`DESCRIPTION:${escapeDavText(data.notes)}`);
   if (data.due) lines.push(`DUE:${formatICalUtc(data.due)}`);
   if (data.priority !== undefined) lines.push(`PRIORITY:${data.priority}`);
   if (data.completed) {
@@ -293,18 +276,6 @@ function parseEventsFromObjects(objects: DAVCalendarObject[]): CalendarEvent[] {
   return events;
 }
 
-function generateUid(): string {
-  return `nc-${Date.now()}-${Math.random().toString(36).slice(2, 10)}@nanoclaw`;
-}
-
-function eventFilename(uid: string): string {
-  return `${uid.replace(/[^a-zA-Z0-9-]/g, '-')}.ics`;
-}
-
-function joinUrl(base: string, filename: string): string {
-  return base.endsWith('/') ? `${base}${filename}` : `${base}/${filename}`;
-}
-
 export function startCaldavService(
   port: number,
   host: string,
@@ -376,7 +347,7 @@ function buildCaldavHandler({
         });
         return 400;
       }
-      const cal = findCalendarByUrl(calendars, calendarUrl);
+      const cal = findResourceByUrl(calendars, calendarUrl);
       if (!cal) {
         sendJson(res, 404, { error: `calendar not found: ${calendarUrl}` });
         return 404;
@@ -398,15 +369,15 @@ function buildCaldavHandler({
         });
         return 400;
       }
-      const cal = findCalendarByUrl(calendars, body.calendar_url);
+      const cal = findResourceByUrl(calendars, body.calendar_url);
       if (!cal) {
         sendJson(res, 404, {
           error: `calendar not found: ${body.calendar_url}`,
         });
         return 404;
       }
-      const uid = generateUid();
-      const filename = eventFilename(uid);
+      const uid = generateDavUid();
+      const filename = davFilename(uid, 'ics');
       const iCalString = buildICalString({
         uid,
         title: body.title,
@@ -427,7 +398,7 @@ function buildCaldavHandler({
         });
         return 502;
       }
-      sendJson(res, 201, { url: joinUrl(cal.url, filename), uid });
+      sendJson(res, 201, { url: joinDavUrl(cal.url, filename), uid });
       return 201;
     }
 
@@ -437,7 +408,7 @@ function buildCaldavHandler({
         sendJson(res, 400, { error: 'object_url is required' });
         return 400;
       }
-      const cal = findCalendarForObject(calendars, body.object_url);
+      const cal = findResourceOwningUrl(calendars, body.object_url);
       if (!cal) {
         sendJson(res, 404, {
           error: `no calendar owns url: ${body.object_url}`,
@@ -493,7 +464,7 @@ function buildCaldavHandler({
         sendJson(res, 400, { error: 'calendar_url is required' });
         return 400;
       }
-      const cal = findCalendarByUrl(calendars, calendarUrl);
+      const cal = findResourceByUrl(calendars, calendarUrl);
       if (!cal) {
         sendJson(res, 404, { error: `calendar not found: ${calendarUrl}` });
         return 404;
@@ -518,15 +489,15 @@ function buildCaldavHandler({
         sendJson(res, 400, { error: 'calendar_url and title are required' });
         return 400;
       }
-      const cal = findCalendarByUrl(calendars, body.calendar_url);
+      const cal = findResourceByUrl(calendars, body.calendar_url);
       if (!cal) {
         sendJson(res, 404, {
           error: `calendar not found: ${body.calendar_url}`,
         });
         return 404;
       }
-      const uid = generateUid();
-      const filename = eventFilename(uid);
+      const uid = generateDavUid();
+      const filename = davFilename(uid, 'ics');
       const iCalString = buildVTodoICalString({
         uid,
         title: body.title,
@@ -545,7 +516,7 @@ function buildCaldavHandler({
         });
         return 502;
       }
-      sendJson(res, 201, { url: joinUrl(cal.url, filename), uid });
+      sendJson(res, 201, { url: joinDavUrl(cal.url, filename), uid });
       return 201;
     }
 
@@ -555,7 +526,7 @@ function buildCaldavHandler({
         sendJson(res, 400, { error: 'object_url is required' });
         return 400;
       }
-      const cal = findCalendarForObject(calendars, body.object_url);
+      const cal = findResourceOwningUrl(calendars, body.object_url);
       if (!cal) {
         sendJson(res, 404, {
           error: `no calendar owns url: ${body.object_url}`,

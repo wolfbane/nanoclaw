@@ -10,8 +10,14 @@ import { DAVAddressBook, DAVClient, DAVObject } from 'tsdav';
 import {
   DavLoginManager,
   REQUEST_URL_BASE,
+  davFilename,
+  escapeDavText,
   extractDisplayName,
-  readJsonBody,
+  findResourceByUrl,
+  findResourceOwningUrl,
+  generateDavUid,
+  joinDavUrl,
+  readJsonBodyOr400,
   sendJson,
   startICloudDavService,
 } from './dav-service-util.js';
@@ -22,8 +28,7 @@ interface ContactPhoneOrEmail {
   value: string;
 }
 
-// Five components of vCard N (Family;Given;Additional;Prefix;Suffix). Stored
-// in full so PATCH can round-trip the components the caller didn't touch.
+// Family;Given;Additional;Prefix;Suffix per RFC 6350 §6.2.2.
 type NComponents = [string, string, string, string, string];
 
 interface ContactSummary {
@@ -84,24 +89,15 @@ function unfoldLines(raw: string): string[] {
   return out;
 }
 
-function unescapeVCardText(s: string): string {
-  // Single-pass parser. Order-dependent regex chains mis-decode sequences
-  // like "\\n" (escaped backslash + literal 'n'): the regex /\\n/ matches
-  // the trailing "\n" first and turns it into a newline before the "\\"
-  // collapses, leaving "\" + newline instead of "\n". Walking char-by-char
-  // and consuming the next char on each "\" avoids that.
+// Single-pass to avoid the regex-chain reorder bug: /\\n/ would match the
+// "\n" inside "\\n" before "\\" collapses, mis-decoding to "\" + newline.
+function unescapeDavText(s: string): string {
   let out = '';
   for (let i = 0; i < s.length; i++) {
     const c = s[i];
     if (c === '\\' && i + 1 < s.length) {
       const next = s[i + 1];
-      if (next === 'n' || next === 'N') {
-        out += '\n';
-      } else {
-        // RFC 6350 §3.4 only defines \\, \,, \;, \n / \N. Unknown sequences
-        // are emitted as the literal next character (lenient).
-        out += next;
-      }
+      out += next === 'n' || next === 'N' ? '\n' : next;
       i++;
     } else {
       out += c;
@@ -129,7 +125,7 @@ function splitStructuredValue(raw: string): string[] {
     }
   }
   out.push(cur);
-  return out.map(unescapeVCardText);
+  return out.map(unescapeDavText);
 }
 
 function toFiveComponents(parts: string[]): NComponents {
@@ -187,7 +183,7 @@ function parseVCard(raw: string): ContactSummary | null {
       sawBegin = true;
       continue;
     }
-    const decoded = unescapeVCardText(value);
+    const decoded = unescapeDavText(value);
     switch (key) {
       case 'FN':
         if (!contact.full_name) contact.full_name = decoded;
@@ -290,16 +286,6 @@ function compareContacts(a: ContactSummary, b: ContactSummary): number {
   return a.url.localeCompare(b.url);
 }
 
-function escapeVCardText(s: string): string {
-  // RFC 6350 §3.4: escape \\, newline, comma, semicolon. Standalone CR also
-  // gets folded into \n so it can never break the CRLF line structure.
-  return s
-    .replace(/\\/g, '\\\\')
-    .replace(/\r\n|\r|\n/g, '\\n')
-    .replace(/,/g, '\\,')
-    .replace(/;/g, '\\;');
-}
-
 // vCard params live before the ":" and are delimited by ";" / ",". Anything
 // outside [A-Za-z0-9-] is dropped to prevent a user-supplied label like
 // `cell:INJECTED` from breaking out of the TYPE parameter.
@@ -322,77 +308,35 @@ function buildVCard(data: {
     'BEGIN:VCARD',
     'VERSION:3.0',
     `UID:${data.uid}`,
-    `FN:${escapeVCardText(data.full_name)}`,
+    `FN:${escapeDavText(data.full_name)}`,
   ];
   if (data.n_components && data.n_components.some((c) => c !== '')) {
-    lines.push(`N:${data.n_components.map(escapeVCardText).join(';')}`);
+    lines.push(`N:${data.n_components.map(escapeDavText).join(';')}`);
   }
   if (data.organization) {
-    lines.push(`ORG:${escapeVCardText(data.organization)}`);
+    lines.push(`ORG:${escapeDavText(data.organization)}`);
   }
   if (data.title) {
-    lines.push(`TITLE:${escapeVCardText(data.title)}`);
+    lines.push(`TITLE:${escapeDavText(data.title)}`);
   }
   for (const p of data.phones ?? []) {
     if (!p.value) continue;
     const t = p.type ? sanitizeTypeParam(p.type) : '';
-    lines.push(`TEL${t ? `;TYPE=${t}` : ''}:${escapeVCardText(p.value)}`);
+    lines.push(`TEL${t ? `;TYPE=${t}` : ''}:${escapeDavText(p.value)}`);
   }
   for (const e of data.emails ?? []) {
     if (!e.value) continue;
     const t = e.type ? sanitizeTypeParam(e.type) : '';
-    lines.push(`EMAIL${t ? `;TYPE=${t}` : ''}:${escapeVCardText(e.value)}`);
+    lines.push(`EMAIL${t ? `;TYPE=${t}` : ''}:${escapeDavText(e.value)}`);
   }
   if (data.birthday) {
-    lines.push(`BDAY:${escapeVCardText(data.birthday)}`);
+    lines.push(`BDAY:${escapeDavText(data.birthday)}`);
   }
   if (data.notes) {
-    lines.push(`NOTE:${escapeVCardText(data.notes)}`);
+    lines.push(`NOTE:${escapeDavText(data.notes)}`);
   }
   lines.push('END:VCARD');
   return lines.join('\r\n') + '\r\n';
-}
-
-function generateUid(): string {
-  return `nc-${Date.now()}-${Math.random().toString(36).slice(2, 10)}@nanoclaw`;
-}
-
-function vCardFilename(uid: string): string {
-  return `${uid.replace(/[^a-zA-Z0-9-]/g, '-')}.vcf`;
-}
-
-function joinUrl(base: string, filename: string): string {
-  return base.endsWith('/') ? `${base}${filename}` : `${base}/${filename}`;
-}
-
-function findAddressBookByUrl(
-  books: DAVAddressBook[],
-  url: string,
-): DAVAddressBook | undefined {
-  return books.find((b) => b.url === url);
-}
-
-function findAddressBookForObject(
-  books: DAVAddressBook[],
-  objectUrl: string,
-): DAVAddressBook | undefined {
-  return books.find((b) => objectUrl.startsWith(b.url));
-}
-
-// Wraps readJsonBody so a malformed body becomes a 400, not a 500. The
-// handler returns 400 immediately if this returns null.
-async function readBodyOr400<T>(
-  req: IncomingMessage,
-  res: ServerResponse,
-): Promise<T | null> {
-  try {
-    return await readJsonBody<T>(req);
-  } catch (err) {
-    sendJson(res, 400, {
-      error: `invalid JSON body: ${err instanceof Error ? err.message : String(err)}`,
-    });
-    return null;
-  }
 }
 
 interface ScalarFieldSpec {
@@ -402,16 +346,18 @@ interface ScalarFieldSpec {
   nullable?: boolean;
 }
 
-// Runtime guard for the string-typed fields on CreateContactBody /
-// UpdateContactBody. The TypeScript types only document the expected shape;
-// JSON input is `unknown` until checked, so a non-string value here would
-// otherwise reach escapeVCardText and throw, surfacing as a 500.
+// Runtime guard for string-typed body fields. Without this, a non-string
+// value would reach escapeDavText and surface as a 500.
 function validateScalarFields(
-  body: Record<string, unknown>,
+  body: unknown,
   specs: ScalarFieldSpec[],
 ): { ok: true } | { ok: false; error: string } {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return { ok: false, error: 'body must be a JSON object' };
+  }
+  const obj = body as Record<string, unknown>;
   for (const { name, required, nullable } of specs) {
-    const v = body[name];
+    const v = obj[name];
     if (v === undefined) {
       if (required) return { ok: false, error: `${name} is required` };
       continue;
@@ -432,6 +378,28 @@ function validateScalarFields(
   }
   return { ok: true };
 }
+
+const POST_CONTACT_SCALARS: ScalarFieldSpec[] = [
+  { name: 'address_book_url', required: true },
+  { name: 'full_name', required: true },
+  { name: 'given_name' },
+  { name: 'family_name' },
+  { name: 'organization' },
+  { name: 'title' },
+  { name: 'birthday' },
+  { name: 'notes' },
+];
+
+const PATCH_CONTACT_SCALARS: ScalarFieldSpec[] = [
+  { name: 'object_url', required: true },
+  { name: 'full_name' },
+  { name: 'given_name', nullable: true },
+  { name: 'family_name', nullable: true },
+  { name: 'organization', nullable: true },
+  { name: 'title', nullable: true },
+  { name: 'birthday', nullable: true },
+  { name: 'notes', nullable: true },
+];
 
 // undefined → caller didn't touch the field (PATCH preserves current);
 // successful empty array → caller wants the list cleared.
@@ -488,26 +456,15 @@ function nComponentsFromCreate(
   return [family_name ?? '', given_name ?? '', '', '', ''];
 }
 
-// On update we only overwrite the slots the caller actually touched; the
-// existing additional/prefix/suffix components are round-tripped from the
-// current vCard so a PATCH that doesn't mention them doesn't clear them.
+// Only family/given come from the request; additional/prefix/suffix round-trip
+// from the existing card so a PATCH that doesn't mention them doesn't clear them.
 function mergeNComponents(
   body: { family_name?: string | null; given_name?: string | null },
   current: NComponents | undefined,
 ): NComponents | undefined {
   const base: NComponents = current ?? ['', '', '', '', ''];
-  const family =
-    body.family_name === null
-      ? ''
-      : body.family_name !== undefined
-        ? body.family_name
-        : base[0];
-  const given =
-    body.given_name === null
-      ? ''
-      : body.given_name !== undefined
-        ? body.given_name
-        : base[1];
+  const family = mergeNullable(body.family_name, base[0]) ?? '';
+  const given = mergeNullable(body.given_name, base[1]) ?? '';
   const merged: NComponents = [family, given, base[2], base[3], base[4]];
   return merged.some((c) => c !== '') ? merged : undefined;
 }
@@ -638,21 +595,9 @@ function buildCarddavHandler({
     }
 
     if (method === 'POST' && pathname === '/contacts') {
-      const body = await readBodyOr400<CreateContactBody>(req, res);
+      const body = await readJsonBodyOr400<CreateContactBody>(req, res);
       if (!body) return 400;
-      const scalars = validateScalarFields(
-        body as unknown as Record<string, unknown>,
-        [
-          { name: 'address_book_url', required: true },
-          { name: 'full_name', required: true },
-          { name: 'given_name' },
-          { name: 'family_name' },
-          { name: 'organization' },
-          { name: 'title' },
-          { name: 'birthday' },
-          { name: 'notes' },
-        ],
-      );
+      const scalars = validateScalarFields(body, POST_CONTACT_SCALARS);
       if (!scalars.ok) {
         sendJson(res, 400, { error: scalars.error });
         return 400;
@@ -667,15 +612,15 @@ function buildCarddavHandler({
         sendJson(res, 400, { error: emails.error });
         return 400;
       }
-      const book = findAddressBookByUrl(addressBooks, body.address_book_url);
+      const book = findResourceByUrl(addressBooks, body.address_book_url);
       if (!book) {
         sendJson(res, 404, {
           error: `address book not found: ${body.address_book_url}`,
         });
         return 404;
       }
-      const uid = generateUid();
-      const filename = vCardFilename(uid);
+      const uid = generateDavUid();
+      const filename = davFilename(uid, 'vcf');
       const vCardString = buildVCard({
         uid,
         full_name: body.full_name,
@@ -699,26 +644,14 @@ function buildCarddavHandler({
         return 502;
       }
       invalidateCache();
-      sendJson(res, 201, { url: joinUrl(book.url, filename), uid });
+      sendJson(res, 201, { url: joinDavUrl(book.url, filename), uid });
       return 201;
     }
 
     if (method === 'PATCH' && pathname === '/contacts') {
-      const body = await readBodyOr400<UpdateContactBody>(req, res);
+      const body = await readJsonBodyOr400<UpdateContactBody>(req, res);
       if (!body) return 400;
-      const scalars = validateScalarFields(
-        body as unknown as Record<string, unknown>,
-        [
-          { name: 'object_url', required: true },
-          { name: 'full_name' },
-          { name: 'given_name', nullable: true },
-          { name: 'family_name', nullable: true },
-          { name: 'organization', nullable: true },
-          { name: 'title', nullable: true },
-          { name: 'birthday', nullable: true },
-          { name: 'notes', nullable: true },
-        ],
-      );
+      const scalars = validateScalarFields(body, PATCH_CONTACT_SCALARS);
       if (!scalars.ok) {
         sendJson(res, 400, { error: scalars.error });
         return 400;
@@ -733,7 +666,7 @@ function buildCarddavHandler({
         sendJson(res, 400, { error: emails.error });
         return 400;
       }
-      const book = findAddressBookForObject(addressBooks, body.object_url);
+      const book = findResourceOwningUrl(addressBooks, body.object_url);
       if (!book) {
         sendJson(res, 404, {
           error: `no address book owns url: ${body.object_url}`,
@@ -758,7 +691,7 @@ function buildCarddavHandler({
         return 500;
       }
       const vCardString = buildVCard({
-        uid: current.uid || generateUid(),
+        uid: current.uid || generateDavUid(),
         full_name: body.full_name ?? current.full_name,
         n_components: mergeNComponents(body, current.n_components),
         organization: mergeNullable(body.organization, current.organization),

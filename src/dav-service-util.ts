@@ -35,6 +35,62 @@ export async function readJsonBody<T>(req: IncomingMessage): Promise<T> {
   });
 }
 
+// Wraps readJsonBody so a malformed body becomes a 400 (with a clear error),
+// not a 500 from the generic handler error path. Caller returns 400 when
+// this returns null.
+export async function readJsonBodyOr400<T>(
+  req: IncomingMessage,
+  res: ServerResponse,
+): Promise<T | null> {
+  try {
+    return await readJsonBody<T>(req);
+  } catch (err) {
+    sendJson(res, 400, {
+      error: `invalid JSON body: ${err instanceof Error ? err.message : String(err)}`,
+    });
+    return null;
+  }
+}
+
+// Random UID used as the iCal/vCard UID and (after sanitization) the
+// filename of the new object on the DAV collection.
+export function generateDavUid(): string {
+  return `nc-${Date.now()}-${Math.random().toString(36).slice(2, 10)}@nanoclaw`;
+}
+
+export function davFilename(uid: string, extension: string): string {
+  return `${uid.replace(/[^a-zA-Z0-9-]/g, '-')}.${extension}`;
+}
+
+export function joinDavUrl(base: string, filename: string): string {
+  return base.endsWith('/') ? `${base}${filename}` : `${base}/${filename}`;
+}
+
+export function findResourceByUrl<T extends { url: string }>(
+  resources: T[],
+  url: string,
+): T | undefined {
+  return resources.find((r) => r.url === url);
+}
+
+export function findResourceOwningUrl<T extends { url: string }>(
+  resources: T[],
+  objectUrl: string,
+): T | undefined {
+  return resources.find((r) => objectUrl.startsWith(r.url));
+}
+
+// RFC 5545 §3.3.11 (iCal) and RFC 6350 §3.4 (vCard) define the same set of
+// text escapes. Bare CR is folded into the newline escape so it can never
+// disrupt the CRLF line structure.
+export function escapeDavText(s: string): string {
+  return s
+    .replace(/\\/g, '\\\\')
+    .replace(/\r\n|\r|\n/g, '\\n')
+    .replace(/,/g, '\\,')
+    .replace(/;/g, '\\;');
+}
+
 export function extractDisplayName(o: { displayName?: unknown }): string {
   const dn = o.displayName;
   if (typeof dn === 'string') return dn;

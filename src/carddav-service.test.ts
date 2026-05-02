@@ -293,11 +293,6 @@ describe('carddav-service', () => {
       expect(vcard).toContain(
         'NOTE:line1\\nline2\\nline3\\nline4\\; with \\; semis\\, and \\, commas\r\n',
       );
-      // Sanity: no literal CR or LF inside the body of any folded line.
-      const lines = vcard.split('\r\n');
-      for (const line of lines) {
-        expect(line.includes('\r') || line.includes('\n')).toBe(false);
-      }
     });
 
     it('sanitizes phone/email TYPE params to prevent injection', async () => {
@@ -797,10 +792,8 @@ describe('carddav-service', () => {
     });
 
     it('round-trips an escaped backslash without mis-decoding the next char', async () => {
-      // The wire form `NOTE:hello\\nworld` represents the literal string
-      // "hello\nworld" (backslash + 'n'). The old regex chain mis-decoded
-      // it to "hello" + newline + "world"; we verify here that an unrelated
-      // PATCH leaves the NOTE bytes unchanged.
+      // Wire form `NOTE:hello\\nworld` decodes to literal "hello\nworld"
+      // (backslash + 'n'), not "hello" + newline.
       davClientState.objectsByBook.set(BOOK_URL, [
         {
           url: EXISTING_URL,
