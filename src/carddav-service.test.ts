@@ -530,6 +530,91 @@ describe('carddav-service', () => {
       );
       expect(res.statusCode).toBe(502);
     });
+
+    it('preserves additional/prefix/suffix N components when only family/given change', async () => {
+      // Seed a vCard whose N has all 5 slots populated.
+      davClientState.objectsByBook.set(BOOK_URL, [
+        {
+          url: EXISTING_URL,
+          etag: 'etag-1',
+          data: buildVCardData([
+            'UID:original-uid',
+            'FN:Dr. Sam Carter Jr.',
+            'N:Carter;Sam;Quinn;Dr.;Jr.',
+          ]),
+        },
+      ]);
+      const port = await start();
+      await request(
+        port,
+        {
+          method: 'PATCH',
+          path: '/contacts',
+          headers: { 'content-type': 'application/json' },
+        },
+        // Only change the given name; family/additional/prefix/suffix
+        // should round-trip from the original card.
+        JSON.stringify({ object_url: EXISTING_URL, given_name: 'Samuel' }),
+      );
+      const sent = davClientState.lastUpdate!.data;
+      expect(sent).toMatch(/N:Carter;Samuel;Quinn;Dr\.;Jr\.\r\n/);
+    });
+
+    it('clears only the slot for given_name=null and preserves the other components', async () => {
+      davClientState.objectsByBook.set(BOOK_URL, [
+        {
+          url: EXISTING_URL,
+          etag: 'etag-1',
+          data: buildVCardData([
+            'UID:u',
+            'FN:Sam',
+            'N:Carter;Sam;Quinn;Dr.;Jr.',
+          ]),
+        },
+      ]);
+      const port = await start();
+      await request(
+        port,
+        {
+          method: 'PATCH',
+          path: '/contacts',
+          headers: { 'content-type': 'application/json' },
+        },
+        JSON.stringify({ object_url: EXISTING_URL, given_name: null }),
+      );
+      const sent = davClientState.lastUpdate!.data;
+      expect(sent).toMatch(/N:Carter;;Quinn;Dr\.;Jr\.\r\n/);
+    });
+
+    it('round-trips a literal semicolon inside an N component', async () => {
+      // Family name "Smith; Jr" — the ";" must be escaped on the wire and
+      // must NOT split the field on parse.
+      davClientState.objectsByBook.set(BOOK_URL, [
+        {
+          url: EXISTING_URL,
+          etag: 'etag-1',
+          data: buildVCardData([
+            'UID:u',
+            'FN:Sam Smith; Jr',
+            'N:Smith\\; Jr;Sam;;;',
+          ]),
+        },
+      ]);
+      const port = await start();
+      // Update an unrelated field; the N line should come back unchanged
+      // (still containing the escaped semicolon in the family slot).
+      await request(
+        port,
+        {
+          method: 'PATCH',
+          path: '/contacts',
+          headers: { 'content-type': 'application/json' },
+        },
+        JSON.stringify({ object_url: EXISTING_URL, title: 'CTO' }),
+      );
+      const sent = davClientState.lastUpdate!.data;
+      expect(sent).toMatch(/N:Smith\\; Jr;Sam;;;\r\n/);
+    });
   });
 
   describe('cache invalidation', () => {
@@ -636,6 +721,88 @@ describe('carddav-service', () => {
       const body = JSON.parse(freshGet.body);
       expect(body.total).toBe(1);
       expect(body.contacts[0].full_name).toBe('Fresh Snapshot');
+    });
+
+    it('detaches the in-flight load on mutation so the next GET starts a fresh fetch', async () => {
+      const port = await start();
+
+      // Track every fetchVCards call. The first is the pre-mutation slow load;
+      // the second must be a freshly started load triggered by the post-
+      // mutation GET (proving we don't reuse the in-flight stale promise).
+      const fetchCalls: { resolved: boolean }[] = [];
+      let releaseFirst: (() => void) | null = null;
+      const firstGate = new Promise<void>((r) => {
+        releaseFirst = r;
+      });
+
+      davClientState.fetchVCardsImpl = async () => {
+        const slot = { resolved: false };
+        fetchCalls.push(slot);
+        if (fetchCalls.length === 1) {
+          await firstGate;
+          slot.resolved = true;
+          return [
+            {
+              url: `${BOOK_URL}stale.vcf`,
+              etag: 'etag-stale',
+              data: buildVCardData(['UID:stale-uid', 'FN:Stale Result']),
+            },
+          ];
+        }
+        slot.resolved = true;
+        return [
+          {
+            url: `${BOOK_URL}fresh.vcf`,
+            etag: 'etag-fresh',
+            data: buildVCardData(['UID:fresh-uid', 'FN:Fresh Result']),
+          },
+        ];
+      };
+
+      // Kick off the slow GET. Don't await it.
+      const slowGetPromise = request(port, {
+        method: 'GET',
+        path: '/contacts',
+      });
+      // Yield so the handler enters loadAllContacts and parks on the gate.
+      await new Promise((r) => setTimeout(r, 5));
+      expect(fetchCalls.length).toBe(1);
+
+      // Mutation while the first load is parked.
+      const created = await request(
+        port,
+        {
+          method: 'POST',
+          path: '/contacts',
+          headers: { 'content-type': 'application/json' },
+        },
+        JSON.stringify({ address_book_url: BOOK_URL, full_name: 'X' }),
+      );
+      expect(created.statusCode).toBe(201);
+
+      // Now hit GET /contacts again. Because invalidateCache() detached the
+      // first load, this should kick off a SECOND fetchVCards call rather
+      // than awaiting the still-parked first one.
+      const postMutationGetPromise = request(port, {
+        method: 'GET',
+        path: '/contacts',
+      });
+      await new Promise((r) => setTimeout(r, 5));
+      expect(fetchCalls.length).toBe(2);
+
+      // The second load isn't gated, so it should already have resolved.
+      // The post-mutation GET should now complete and see "Fresh Result".
+      const postMutationGet = await postMutationGetPromise;
+      expect(postMutationGet.statusCode).toBe(200);
+      const body = JSON.parse(postMutationGet.body);
+      expect(
+        body.contacts.map((c: { full_name: string }) => c.full_name),
+      ).toContain('Fresh Result');
+
+      // Finally release the parked first load and let it finish; its result
+      // should be discarded (not surface in any later GET).
+      releaseFirst!();
+      await slowGetPromise;
     });
   });
 });

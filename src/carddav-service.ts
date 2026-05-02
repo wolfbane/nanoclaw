@@ -22,6 +22,10 @@ interface ContactPhoneOrEmail {
   value: string;
 }
 
+// Five components of vCard N (Family;Given;Additional;Prefix;Suffix). Stored
+// in full so PATCH can round-trip the components the caller didn't touch.
+type NComponents = [string, string, string, string, string];
+
 interface ContactSummary {
   url: string;
   etag?: string;
@@ -29,6 +33,7 @@ interface ContactSummary {
   full_name: string;
   given_name?: string;
   family_name?: string;
+  n_components?: NComponents;
   organization?: string;
   title?: string;
   phones: ContactPhoneOrEmail[];
@@ -87,6 +92,34 @@ function unescapeVCardText(s: string): string {
     .replace(/\\\\/g, '\\');
 }
 
+// Split a structured value (e.g. N) on unescaped ";". Each component is then
+// unescaped on its own, so a literal ";" inside a component round-trips
+// correctly.
+function splitStructuredValue(raw: string): string[] {
+  const out: string[] = [];
+  let cur = '';
+  for (let i = 0; i < raw.length; i++) {
+    const c = raw[i];
+    if (c === '\\' && i + 1 < raw.length) {
+      cur += c + raw[i + 1];
+      i++;
+    } else if (c === ';') {
+      out.push(cur);
+      cur = '';
+    } else {
+      cur += c;
+    }
+  }
+  out.push(cur);
+  return out.map(unescapeVCardText);
+}
+
+function toFiveComponents(parts: string[]): NComponents {
+  const padded: string[] = [...parts];
+  while (padded.length < 5) padded.push('');
+  return [padded[0], padded[1], padded[2], padded[3], padded[4]];
+}
+
 function parseVCardLine(line: string): {
   key: string;
   params: Record<string, string>;
@@ -142,9 +175,11 @@ function parseVCard(raw: string): ContactSummary | null {
         if (!contact.full_name) contact.full_name = decoded;
         break;
       case 'N': {
-        // Structured name "Family;Given;Additional;Prefix;Suffix".
-        const parts = decoded.split(';').map((s) => s.trim());
-        const [family, given] = parts;
+        // Structured name "Family;Given;Additional;Prefix;Suffix". Split on
+        // the raw value so escaped ";" inside a component is preserved.
+        const components = toFiveComponents(splitStructuredValue(value));
+        contact.n_components = components;
+        const [family, given] = components;
         if (family) contact.family_name = family;
         if (given) contact.given_name = given;
         if (!contact.full_name) {
@@ -257,8 +292,7 @@ function sanitizeTypeParam(type: string): string {
 function buildVCard(data: {
   uid: string;
   full_name: string;
-  given_name?: string;
-  family_name?: string;
+  n_components?: NComponents;
   organization?: string;
   title?: string;
   phones?: ContactPhoneOrEmail[];
@@ -272,10 +306,8 @@ function buildVCard(data: {
     `UID:${data.uid}`,
     `FN:${escapeVCardText(data.full_name)}`,
   ];
-  if (data.family_name || data.given_name) {
-    const family = data.family_name ? escapeVCardText(data.family_name) : '';
-    const given = data.given_name ? escapeVCardText(data.given_name) : '';
-    lines.push(`N:${family};${given};;;`);
+  if (data.n_components && data.n_components.some((c) => c !== '')) {
+    lines.push(`N:${data.n_components.map(escapeVCardText).join(';')}`);
   }
   if (data.organization) {
     lines.push(`ORG:${escapeVCardText(data.organization)}`);
@@ -339,6 +371,40 @@ function mergeNullable<T>(
   return incoming;
 }
 
+// On create we only know family/given from the request; the other three
+// N components stay empty (and the line is omitted entirely if both are too).
+function nComponentsFromCreate(
+  given_name?: string,
+  family_name?: string,
+): NComponents | undefined {
+  if (!given_name && !family_name) return undefined;
+  return [family_name ?? '', given_name ?? '', '', '', ''];
+}
+
+// On update we only overwrite the slots the caller actually touched; the
+// existing additional/prefix/suffix components are round-tripped from the
+// current vCard so a PATCH that doesn't mention them doesn't clear them.
+function mergeNComponents(
+  body: { family_name?: string | null; given_name?: string | null },
+  current: NComponents | undefined,
+): NComponents | undefined {
+  const base: NComponents = current ?? ['', '', '', '', ''];
+  const family =
+    body.family_name === null
+      ? ''
+      : body.family_name !== undefined
+        ? body.family_name
+        : base[0];
+  const given =
+    body.given_name === null
+      ? ''
+      : body.given_name !== undefined
+        ? body.given_name
+        : base[1];
+  const merged: NComponents = [family, given, base[2], base[3], base[4]];
+  return merged.some((c) => c !== '') ? merged : undefined;
+}
+
 export function startCarddavService(
   port: number,
   host: string,
@@ -369,14 +435,15 @@ function buildCarddavHandler({
   let cachedContacts: ContactSummary[] | null = null;
   let cachedAt = 0;
   let inFlight: Promise<ContactSummary[]> | null = null;
-  // Bumped on every mutation; an in-flight load only writes back if the
-  // generation it captured at start is still current. Without this, a load
-  // started just before a successful POST/PATCH would re-cache stale data
-  // and hide the new contact for the rest of the TTL.
+  // Bumped on every mutation. Used for two things: (1) detach a stale
+  // in-flight load so the next GET kicks off a fresh fetch instead of
+  // awaiting one that started before the mutation, and (2) prevent the
+  // detached load from writing its (now stale) snapshot to the cache.
   let cacheGeneration = 0;
 
   const invalidateCache = (): void => {
     cachedContacts = null;
+    inFlight = null;
     cacheGeneration++;
   };
 
@@ -386,7 +453,7 @@ function buildCarddavHandler({
     }
     if (inFlight) return inFlight;
     const startGeneration = cacheGeneration;
-    inFlight = (async () => {
+    const load = (async () => {
       const perBook = await Promise.all(
         loginManager
           .getResources()
@@ -400,9 +467,13 @@ function buildCarddavHandler({
       }
       return all;
     })().finally(() => {
-      inFlight = null;
+      // Only clear the slot if it's still pointing at our load; an
+      // invalidateCache() during the fetch will have already detached it
+      // and possibly assigned a newer load there.
+      if (inFlight === load) inFlight = null;
     });
-    return inFlight;
+    inFlight = load;
+    return load;
   };
 
   return async (req: IncomingMessage, res: ServerResponse): Promise<number> => {
@@ -479,8 +550,7 @@ function buildCarddavHandler({
       const vCardString = buildVCard({
         uid,
         full_name: body.full_name,
-        given_name: body.given_name,
-        family_name: body.family_name,
+        n_components: nComponentsFromCreate(body.given_name, body.family_name),
         organization: body.organization,
         title: body.title,
         phones: body.phones,
@@ -537,8 +607,7 @@ function buildCarddavHandler({
       const vCardString = buildVCard({
         uid: current.uid || generateUid(),
         full_name: body.full_name ?? current.full_name,
-        given_name: mergeNullable(body.given_name, current.given_name),
-        family_name: mergeNullable(body.family_name, current.family_name),
+        n_components: mergeNComponents(body, current.n_components),
         organization: mergeNullable(body.organization, current.organization),
         title: mergeNullable(body.title, current.title),
         phones: body.phones ?? current.phones,
