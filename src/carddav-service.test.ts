@@ -362,6 +362,76 @@ describe('carddav-service', () => {
       expect(JSON.parse(res.body).error).toMatch(/invalid JSON/i);
     });
 
+    it('returns 400 when full_name is not a string', async () => {
+      const port = await start();
+      const res = await request(
+        port,
+        {
+          method: 'POST',
+          path: '/contacts',
+          headers: { 'content-type': 'application/json' },
+        },
+        JSON.stringify({ address_book_url: BOOK_URL, full_name: 42 }),
+      );
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body).error).toMatch(/full_name must be a string/);
+    });
+
+    it('returns 400 when address_book_url is empty', async () => {
+      const port = await start();
+      const res = await request(
+        port,
+        {
+          method: 'POST',
+          path: '/contacts',
+          headers: { 'content-type': 'application/json' },
+        },
+        JSON.stringify({ address_book_url: '', full_name: 'X' }),
+      );
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body).error).toMatch(/address_book_url/);
+    });
+
+    it('returns 400 when an optional scalar is not a string', async () => {
+      const port = await start();
+      const res = await request(
+        port,
+        {
+          method: 'POST',
+          path: '/contacts',
+          headers: { 'content-type': 'application/json' },
+        },
+        JSON.stringify({
+          address_book_url: BOOK_URL,
+          full_name: 'X',
+          organization: { name: 'Acme' },
+        }),
+      );
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body).error).toMatch(
+        /organization must be a string/,
+      );
+    });
+
+    it('rejects null on POST optional scalar (only PATCH allows null)', async () => {
+      const port = await start();
+      const res = await request(
+        port,
+        {
+          method: 'POST',
+          path: '/contacts',
+          headers: { 'content-type': 'application/json' },
+        },
+        JSON.stringify({
+          address_book_url: BOOK_URL,
+          full_name: 'X',
+          organization: null,
+        }),
+      );
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body).error).toMatch(/organization cannot be null/);
+    });
+
     it('returns 400 when phones is not an array', async () => {
       const port = await start();
       const res = await request(
@@ -620,6 +690,41 @@ describe('carddav-service', () => {
       expect(JSON.parse(res.body).error).toMatch(/invalid JSON/i);
     });
 
+    it('returns 400 when object_url is not a string', async () => {
+      const port = await start();
+      const res = await request(
+        port,
+        {
+          method: 'PATCH',
+          path: '/contacts',
+          headers: { 'content-type': 'application/json' },
+        },
+        JSON.stringify({ object_url: 42 }),
+      );
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body).error).toMatch(/object_url must be a string/);
+    });
+
+    it('returns 400 when a nullable scalar is neither string nor null', async () => {
+      const port = await start();
+      const res = await request(
+        port,
+        {
+          method: 'PATCH',
+          path: '/contacts',
+          headers: { 'content-type': 'application/json' },
+        },
+        JSON.stringify({
+          object_url: 'https://contacts.example/card/x.vcf',
+          notes: 123,
+        }),
+      );
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body).error).toMatch(
+        /notes must be a string or null/,
+      );
+    });
+
     it('returns 400 when emails is not an array', async () => {
       seedContact();
       const port = await start();
@@ -689,6 +794,33 @@ describe('carddav-service', () => {
       );
       const sent = davClientState.lastUpdate!.data;
       expect(sent).toMatch(/N:Carter;;Quinn;Dr\.;Jr\.\r\n/);
+    });
+
+    it('round-trips an escaped backslash without mis-decoding the next char', async () => {
+      // The wire form `NOTE:hello\\nworld` represents the literal string
+      // "hello\nworld" (backslash + 'n'). The old regex chain mis-decoded
+      // it to "hello" + newline + "world"; we verify here that an unrelated
+      // PATCH leaves the NOTE bytes unchanged.
+      davClientState.objectsByBook.set(BOOK_URL, [
+        {
+          url: EXISTING_URL,
+          etag: 'etag-1',
+          data: buildVCardData(['UID:u', 'FN:Sam', 'NOTE:hello\\\\nworld']),
+        },
+      ]);
+      const port = await start();
+      await request(
+        port,
+        {
+          method: 'PATCH',
+          path: '/contacts',
+          headers: { 'content-type': 'application/json' },
+        },
+        JSON.stringify({ object_url: EXISTING_URL, title: 'CTO' }),
+      );
+      const sent = davClientState.lastUpdate!.data;
+      expect(sent).toMatch(/NOTE:hello\\\\nworld\r\n/);
+      expect(sent).not.toMatch(/NOTE:hello\nworld/);
     });
 
     it('round-trips a literal semicolon inside an N component', async () => {

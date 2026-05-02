@@ -85,11 +85,29 @@ function unfoldLines(raw: string): string[] {
 }
 
 function unescapeVCardText(s: string): string {
-  return s
-    .replace(/\\n/gi, '\n')
-    .replace(/\\,/g, ',')
-    .replace(/\\;/g, ';')
-    .replace(/\\\\/g, '\\');
+  // Single-pass parser. Order-dependent regex chains mis-decode sequences
+  // like "\\n" (escaped backslash + literal 'n'): the regex /\\n/ matches
+  // the trailing "\n" first and turns it into a newline before the "\\"
+  // collapses, leaving "\" + newline instead of "\n". Walking char-by-char
+  // and consuming the next char on each "\" avoids that.
+  let out = '';
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (c === '\\' && i + 1 < s.length) {
+      const next = s[i + 1];
+      if (next === 'n' || next === 'N') {
+        out += '\n';
+      } else {
+        // RFC 6350 §3.4 only defines \\, \,, \;, \n / \N. Unknown sequences
+        // are emitted as the literal next character (lenient).
+        out += next;
+      }
+      i++;
+    } else {
+      out += c;
+    }
+  }
+  return out;
 }
 
 // Split a structured value (e.g. N) on unescaped ";". Each component is then
@@ -377,6 +395,44 @@ async function readBodyOr400<T>(
   }
 }
 
+interface ScalarFieldSpec {
+  name: string;
+  required?: boolean;
+  // null is accepted on PATCH ("clear this field"); rejected on POST.
+  nullable?: boolean;
+}
+
+// Runtime guard for the string-typed fields on CreateContactBody /
+// UpdateContactBody. The TypeScript types only document the expected shape;
+// JSON input is `unknown` until checked, so a non-string value here would
+// otherwise reach escapeVCardText and throw, surfacing as a 500.
+function validateScalarFields(
+  body: Record<string, unknown>,
+  specs: ScalarFieldSpec[],
+): { ok: true } | { ok: false; error: string } {
+  for (const { name, required, nullable } of specs) {
+    const v = body[name];
+    if (v === undefined) {
+      if (required) return { ok: false, error: `${name} is required` };
+      continue;
+    }
+    if (v === null) {
+      if (nullable) continue;
+      return { ok: false, error: `${name} cannot be null` };
+    }
+    if (typeof v !== 'string') {
+      return {
+        ok: false,
+        error: `${name} must be a ${nullable ? 'string or null' : 'string'}`,
+      };
+    }
+    if (required && v.length === 0) {
+      return { ok: false, error: `${name} must be non-empty` };
+    }
+  }
+  return { ok: true };
+}
+
 // undefined → caller didn't touch the field (PATCH preserves current);
 // successful empty array → caller wants the list cleared.
 type ValidatedArray =
@@ -584,10 +640,21 @@ function buildCarddavHandler({
     if (method === 'POST' && pathname === '/contacts') {
       const body = await readBodyOr400<CreateContactBody>(req, res);
       if (!body) return 400;
-      if (!body.address_book_url || !body.full_name) {
-        sendJson(res, 400, {
-          error: 'address_book_url and full_name are required',
-        });
+      const scalars = validateScalarFields(
+        body as unknown as Record<string, unknown>,
+        [
+          { name: 'address_book_url', required: true },
+          { name: 'full_name', required: true },
+          { name: 'given_name' },
+          { name: 'family_name' },
+          { name: 'organization' },
+          { name: 'title' },
+          { name: 'birthday' },
+          { name: 'notes' },
+        ],
+      );
+      if (!scalars.ok) {
+        sendJson(res, 400, { error: scalars.error });
         return 400;
       }
       const phones = validateContactArray(body.phones, 'phones');
@@ -639,8 +706,21 @@ function buildCarddavHandler({
     if (method === 'PATCH' && pathname === '/contacts') {
       const body = await readBodyOr400<UpdateContactBody>(req, res);
       if (!body) return 400;
-      if (!body.object_url) {
-        sendJson(res, 400, { error: 'object_url is required' });
+      const scalars = validateScalarFields(
+        body as unknown as Record<string, unknown>,
+        [
+          { name: 'object_url', required: true },
+          { name: 'full_name' },
+          { name: 'given_name', nullable: true },
+          { name: 'family_name', nullable: true },
+          { name: 'organization', nullable: true },
+          { name: 'title', nullable: true },
+          { name: 'birthday', nullable: true },
+          { name: 'notes', nullable: true },
+        ],
+      );
+      if (!scalars.ok) {
+        sendJson(res, 400, { error: scalars.error });
         return 400;
       }
       const phones = validateContactArray(body.phones, 'phones');
