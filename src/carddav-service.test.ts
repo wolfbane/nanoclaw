@@ -347,6 +347,80 @@ describe('carddav-service', () => {
       expect(vcard).not.toMatch(/^N:/m);
     });
 
+    it('returns 400 for malformed JSON', async () => {
+      const port = await start();
+      const res = await request(
+        port,
+        {
+          method: 'POST',
+          path: '/contacts',
+          headers: { 'content-type': 'application/json' },
+        },
+        '{not valid json',
+      );
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body).error).toMatch(/invalid JSON/i);
+    });
+
+    it('returns 400 when phones is not an array', async () => {
+      const port = await start();
+      const res = await request(
+        port,
+        {
+          method: 'POST',
+          path: '/contacts',
+          headers: { 'content-type': 'application/json' },
+        },
+        JSON.stringify({
+          address_book_url: BOOK_URL,
+          full_name: 'X',
+          phones: '+15551234567',
+        }),
+      );
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body).error).toMatch(/phones must be an array/);
+    });
+
+    it('returns 400 when an email entry is missing value', async () => {
+      const port = await start();
+      const res = await request(
+        port,
+        {
+          method: 'POST',
+          path: '/contacts',
+          headers: { 'content-type': 'application/json' },
+        },
+        JSON.stringify({
+          address_book_url: BOOK_URL,
+          full_name: 'X',
+          emails: [{ type: 'home' }],
+        }),
+      );
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body).error).toMatch(/emails\[0\]\.value/);
+    });
+
+    it('returns 400 when a phone entry is not an object', async () => {
+      const port = await start();
+      const res = await request(
+        port,
+        {
+          method: 'POST',
+          path: '/contacts',
+          headers: { 'content-type': 'application/json' },
+        },
+        JSON.stringify({
+          address_book_url: BOOK_URL,
+          full_name: 'X',
+          phones: ['+15551234567'],
+        }),
+      );
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body).error).toMatch(
+        /phones\[0\] must be an object/,
+      );
+    });
+
     it('returns 502 when iCloud rejects the create', async () => {
       const port = await start();
       davClientState.createImpl = async () =>
@@ -529,6 +603,37 @@ describe('carddav-service', () => {
         JSON.stringify({ object_url: EXISTING_URL, full_name: 'X' }),
       );
       expect(res.statusCode).toBe(502);
+    });
+
+    it('returns 400 for malformed JSON', async () => {
+      const port = await start();
+      const res = await request(
+        port,
+        {
+          method: 'PATCH',
+          path: '/contacts',
+          headers: { 'content-type': 'application/json' },
+        },
+        '}}}',
+      );
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body).error).toMatch(/invalid JSON/i);
+    });
+
+    it('returns 400 when emails is not an array', async () => {
+      seedContact();
+      const port = await start();
+      const res = await request(
+        port,
+        {
+          method: 'PATCH',
+          path: '/contacts',
+          headers: { 'content-type': 'application/json' },
+        },
+        JSON.stringify({ object_url: EXISTING_URL, emails: 42 }),
+      );
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body).error).toMatch(/emails must be an array/);
     });
 
     it('preserves additional/prefix/suffix N components when only family/given change', async () => {

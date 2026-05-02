@@ -361,6 +361,57 @@ function findAddressBookForObject(
   return books.find((b) => objectUrl.startsWith(b.url));
 }
 
+// Wraps readJsonBody so a malformed body becomes a 400, not a 500. The
+// handler returns 400 immediately if this returns null.
+async function readBodyOr400<T>(
+  req: IncomingMessage,
+  res: ServerResponse,
+): Promise<T | null> {
+  try {
+    return await readJsonBody<T>(req);
+  } catch (err) {
+    sendJson(res, 400, {
+      error: `invalid JSON body: ${err instanceof Error ? err.message : String(err)}`,
+    });
+    return null;
+  }
+}
+
+// undefined → caller didn't touch the field (PATCH preserves current);
+// successful empty array → caller wants the list cleared.
+type ValidatedArray =
+  | { ok: true; value: ContactPhoneOrEmail[] | undefined }
+  | { ok: false; error: string };
+
+function validateContactArray(raw: unknown, field: string): ValidatedArray {
+  if (raw === undefined) return { ok: true, value: undefined };
+  if (!Array.isArray(raw)) {
+    return { ok: false, error: `${field} must be an array` };
+  }
+  const out: ContactPhoneOrEmail[] = [];
+  for (let i = 0; i < raw.length; i++) {
+    const item = raw[i];
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      return { ok: false, error: `${field}[${i}] must be an object` };
+    }
+    const obj = item as Record<string, unknown>;
+    if (typeof obj.value !== 'string') {
+      return { ok: false, error: `${field}[${i}].value must be a string` };
+    }
+    if (obj.type !== undefined && typeof obj.type !== 'string') {
+      return {
+        ok: false,
+        error: `${field}[${i}].type must be a string when present`,
+      };
+    }
+    out.push({
+      value: obj.value,
+      ...(typeof obj.type === 'string' ? { type: obj.type } : {}),
+    });
+  }
+  return { ok: true, value: out };
+}
+
 // `null` means "clear", `undefined` means "leave unchanged".
 function mergeNullable<T>(
   incoming: T | null | undefined,
@@ -531,11 +582,22 @@ function buildCarddavHandler({
     }
 
     if (method === 'POST' && pathname === '/contacts') {
-      const body = await readJsonBody<CreateContactBody>(req);
+      const body = await readBodyOr400<CreateContactBody>(req, res);
+      if (!body) return 400;
       if (!body.address_book_url || !body.full_name) {
         sendJson(res, 400, {
           error: 'address_book_url and full_name are required',
         });
+        return 400;
+      }
+      const phones = validateContactArray(body.phones, 'phones');
+      if (!phones.ok) {
+        sendJson(res, 400, { error: phones.error });
+        return 400;
+      }
+      const emails = validateContactArray(body.emails, 'emails');
+      if (!emails.ok) {
+        sendJson(res, 400, { error: emails.error });
         return 400;
       }
       const book = findAddressBookByUrl(addressBooks, body.address_book_url);
@@ -553,8 +615,8 @@ function buildCarddavHandler({
         n_components: nComponentsFromCreate(body.given_name, body.family_name),
         organization: body.organization,
         title: body.title,
-        phones: body.phones,
-        emails: body.emails,
+        phones: phones.value,
+        emails: emails.value,
         birthday: body.birthday,
         notes: body.notes,
       });
@@ -575,9 +637,20 @@ function buildCarddavHandler({
     }
 
     if (method === 'PATCH' && pathname === '/contacts') {
-      const body = await readJsonBody<UpdateContactBody>(req);
+      const body = await readBodyOr400<UpdateContactBody>(req, res);
+      if (!body) return 400;
       if (!body.object_url) {
         sendJson(res, 400, { error: 'object_url is required' });
+        return 400;
+      }
+      const phones = validateContactArray(body.phones, 'phones');
+      if (!phones.ok) {
+        sendJson(res, 400, { error: phones.error });
+        return 400;
+      }
+      const emails = validateContactArray(body.emails, 'emails');
+      if (!emails.ok) {
+        sendJson(res, 400, { error: emails.error });
         return 400;
       }
       const book = findAddressBookForObject(addressBooks, body.object_url);
@@ -610,8 +683,8 @@ function buildCarddavHandler({
         n_components: mergeNComponents(body, current.n_components),
         organization: mergeNullable(body.organization, current.organization),
         title: mergeNullable(body.title, current.title),
-        phones: body.phones ?? current.phones,
-        emails: body.emails ?? current.emails,
+        phones: phones.value ?? current.phones,
+        emails: emails.value ?? current.emails,
         birthday: mergeNullable(body.birthday, current.birthday),
         notes: mergeNullable(body.notes, current.notes),
       });
