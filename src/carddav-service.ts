@@ -307,7 +307,7 @@ function buildVCard(data: {
   const lines: string[] = [
     'BEGIN:VCARD',
     'VERSION:3.0',
-    `UID:${data.uid}`,
+    `UID:${escapeDavText(data.uid)}`,
     `FN:${escapeDavText(data.full_name)}`,
   ];
   if (data.n_components && data.n_components.some((c) => c !== '')) {
@@ -690,9 +690,17 @@ function buildCarddavHandler({
         });
         return 500;
       }
+      const fullName = body.full_name ?? current.full_name;
+      if (!fullName) {
+        sendJson(res, 400, {
+          error:
+            'full_name is required for this update because the existing contact has no FN/N',
+        });
+        return 400;
+      }
       const vCardString = buildVCard({
         uid: current.uid || generateDavUid(),
-        full_name: body.full_name ?? current.full_name,
+        full_name: fullName,
         n_components: mergeNComponents(body, current.n_components),
         organization: mergeNullable(body.organization, current.organization),
         title: mergeNullable(body.title, current.title),

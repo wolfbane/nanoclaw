@@ -179,9 +179,18 @@ describe('carddav-service', () => {
     const s = await startCarddavService(0, '127.0.0.1');
     server = s;
     if (!s) throw new Error('service did not start');
-    // Give the deferred login a tick to resolve before tests issue requests.
-    await new Promise((r) => setTimeout(r, 10));
-    return (s.address() as AddressInfo).port;
+    const port = (s.address() as AddressInfo).port;
+    // Login is kicked off via void inside startICloudDavService, so poll
+    // /health rather than guessing a sleep duration. Tests that explicitly
+    // exercise loginStatus !== 'ok' override loginImpl before calling
+    // start() and won't hit the ok branch — those use a separate helper.
+    const deadline = Date.now() + 2000;
+    while (Date.now() < deadline) {
+      const health = await request(port, { method: 'GET', path: '/health' });
+      if (JSON.parse(health.body).loginStatus === 'ok') return port;
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    throw new Error('login did not reach ok within 2s');
   }
 
   describe('POST /contacts', () => {
@@ -789,6 +798,55 @@ describe('carddav-service', () => {
       );
       const sent = davClientState.lastUpdate!.data;
       expect(sent).toMatch(/N:Carter;;Quinn;Dr\.;Jr\.\r\n/);
+    });
+
+    it('escapes a parsed UID on re-emit so newlines in the UID never break line structure', async () => {
+      // `UID:foo\\nbar` on the wire decodes to "foo\nbar" (newline). When
+      // we re-emit, the UID must be re-escaped or it would inject a real
+      // newline into the vCard line structure.
+      davClientState.objectsByBook.set(BOOK_URL, [
+        {
+          url: EXISTING_URL,
+          etag: 'etag-1',
+          data: buildVCardData(['UID:foo\\nbar', 'FN:Sam']),
+        },
+      ]);
+      const port = await start();
+      await request(
+        port,
+        {
+          method: 'PATCH',
+          path: '/contacts',
+          headers: { 'content-type': 'application/json' },
+        },
+        JSON.stringify({ object_url: EXISTING_URL, title: 'CTO' }),
+      );
+      const sent = davClientState.lastUpdate!.data;
+      expect(sent).toMatch(/UID:foo\\nbar\r\n/);
+      expect(sent).not.toMatch(/UID:foo\nbar/);
+    });
+
+    it('returns 400 when the existing contact has no FN and the body does not supply one', async () => {
+      // Card with TEL/EMAIL only — full_name parses as empty.
+      davClientState.objectsByBook.set(BOOK_URL, [
+        {
+          url: EXISTING_URL,
+          etag: 'etag-1',
+          data: buildVCardData(['UID:u', 'TEL:+15551112222']),
+        },
+      ]);
+      const port = await start();
+      const res = await request(
+        port,
+        {
+          method: 'PATCH',
+          path: '/contacts',
+          headers: { 'content-type': 'application/json' },
+        },
+        JSON.stringify({ object_url: EXISTING_URL, title: 'CTO' }),
+      );
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body).error).toMatch(/full_name is required/);
     });
 
     it('round-trips an escaped backslash without mis-decoding the next char', async () => {
