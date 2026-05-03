@@ -461,7 +461,10 @@ function nComponentsFromCreate(
   if (given_name || family_name) {
     return [family_name ?? '', given_name ?? '', '', '', ''];
   }
-  const parts = full_name.trim().split(/\s+/).filter((p) => p !== '');
+  const parts = full_name
+    .trim()
+    .split(/\s+/)
+    .filter((p) => p !== '');
   if (parts.length <= 1) return [parts[0] ?? '', '', '', '', ''];
   const family = parts.pop()!;
   return [family, parts.join(' '), '', '', ''];
