@@ -333,7 +333,9 @@ describe('carddav-service', () => {
       expect(vcard).toContain('EMAIL;TYPE=HOMEWORK:a@b.c\r\n');
     });
 
-    it('omits N when neither given_name nor family_name supplied', async () => {
+    it('derives N from full_name when neither given_name nor family_name supplied', async () => {
+      // iCloud rejects vCards missing N with 403 Forbidden, so the server
+      // synthesizes one: split FN on whitespace, last token → family, rest → given.
       const port = await start();
       await request(
         port,
@@ -348,7 +350,25 @@ describe('carddav-service', () => {
         }),
       );
       const vcard = davClientState.lastCreate!.vCardString;
-      expect(vcard).not.toMatch(/^N:/m);
+      expect(vcard).toMatch(/^N:Name;Just A Display;;;\r\n/m);
+    });
+
+    it('derives N as family-only for a single-word full_name', async () => {
+      const port = await start();
+      await request(
+        port,
+        {
+          method: 'POST',
+          path: '/contacts',
+          headers: { 'content-type': 'application/json' },
+        },
+        JSON.stringify({
+          address_book_url: BOOK_URL,
+          full_name: 'Madonna',
+        }),
+      );
+      const vcard = davClientState.lastCreate!.vCardString;
+      expect(vcard).toMatch(/^N:Madonna;;;;\r\n/m);
     });
 
     it('returns 400 for malformed JSON', async () => {
