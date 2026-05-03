@@ -446,8 +446,8 @@ function mergeNullable<T>(
   return incoming;
 }
 
-// On create we only know family/given from the request; the other three
-// N components stay empty (and the line is omitted entirely if both are too).
+// On create we derive N from the request fields. When given_name/family_name
+// are not supplied, N is synthesised from full_name (see function body).
 function nComponentsFromCreate(
   given_name: string | undefined,
   family_name: string | undefined,
