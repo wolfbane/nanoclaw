@@ -265,7 +265,14 @@ describe('carddav-service', () => {
       expect(res.statusCode).toBe(201);
       const body = JSON.parse(res.body);
       expect(body.url).toMatch(/^https:\/\/contacts\.example\/card\//);
-      expect(body.uid).toMatch(/^nc-/);
+      // iCloud requires the vCard filename to be a UUID — both the inner UID
+      // and the filename slug must match this shape, otherwise PUT 403s.
+      const UUID_RE =
+        /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$/;
+      expect(body.uid).toMatch(UUID_RE);
+      expect(davClientState.lastCreate!.filename).toMatch(
+        /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}\.vcf$/,
+      );
 
       const vcard = davClientState.lastCreate!.vCardString;
       expect(vcard).toMatch(/BEGIN:VCARD\r\n/);
@@ -333,7 +340,9 @@ describe('carddav-service', () => {
       expect(vcard).toContain('EMAIL;TYPE=HOMEWORK:a@b.c\r\n');
     });
 
-    it('omits N when neither given_name nor family_name supplied', async () => {
+    it('derives N from full_name when neither given_name nor family_name supplied', async () => {
+      // iCloud rejects vCards missing N with 403 Forbidden, so the server
+      // synthesizes one: split FN on whitespace, last token → family, rest → given.
       const port = await start();
       await request(
         port,
@@ -348,7 +357,25 @@ describe('carddav-service', () => {
         }),
       );
       const vcard = davClientState.lastCreate!.vCardString;
-      expect(vcard).not.toMatch(/^N:/m);
+      expect(vcard).toMatch(/^N:Name;Just A Display;;;\r\n/m);
+    });
+
+    it('derives N as family-only for a single-word full_name', async () => {
+      const port = await start();
+      await request(
+        port,
+        {
+          method: 'POST',
+          path: '/contacts',
+          headers: { 'content-type': 'application/json' },
+        },
+        JSON.stringify({
+          address_book_url: BOOK_URL,
+          full_name: 'Madonna',
+        }),
+      );
+      const vcard = davClientState.lastCreate!.vCardString;
+      expect(vcard).toMatch(/^N:Madonna;;;;\r\n/m);
     });
 
     it('returns 400 for malformed JSON', async () => {
@@ -379,6 +406,24 @@ describe('carddav-service', () => {
       );
       expect(res.statusCode).toBe(400);
       expect(JSON.parse(res.body).error).toMatch(/full_name must be a string/);
+    });
+
+    it('returns 400 when full_name is whitespace-only', async () => {
+      // Without trim-checking the validator, " " would pass the length check
+      // and the N derivation would fall back to all-empty components, so
+      // buildVCard would omit the N: line and iCloud would still 403.
+      const port = await start();
+      const res = await request(
+        port,
+        {
+          method: 'POST',
+          path: '/contacts',
+          headers: { 'content-type': 'application/json' },
+        },
+        JSON.stringify({ address_book_url: BOOK_URL, full_name: '   ' }),
+      );
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body).error).toMatch(/full_name must be non-empty/);
     });
 
     it('returns 400 when address_book_url is empty', async () => {
