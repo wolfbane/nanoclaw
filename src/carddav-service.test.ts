@@ -267,7 +267,8 @@ describe('carddav-service', () => {
       expect(body.url).toMatch(/^https:\/\/contacts\.example\/card\//);
       // iCloud requires the vCard filename to be a UUID — both the inner UID
       // and the filename slug must match this shape, otherwise PUT 403s.
-      const UUID_RE = /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$/;
+      const UUID_RE =
+        /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$/;
       expect(body.uid).toMatch(UUID_RE);
       expect(davClientState.lastCreate!.filename).toMatch(
         /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}\.vcf$/,
