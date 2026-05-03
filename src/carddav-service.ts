@@ -372,7 +372,7 @@ function validateScalarFields(
         error: `${name} must be a ${nullable ? 'string or null' : 'string'}`,
       };
     }
-    if (required && v.length === 0) {
+    if (required && v.trim().length === 0) {
       return { ok: false, error: `${name} must be non-empty` };
     }
   }

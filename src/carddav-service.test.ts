@@ -401,6 +401,24 @@ describe('carddav-service', () => {
       expect(JSON.parse(res.body).error).toMatch(/full_name must be a string/);
     });
 
+    it('returns 400 when full_name is whitespace-only', async () => {
+      // Without trim-checking the validator, " " would pass the length check
+      // and the N derivation would fall back to all-empty components, so
+      // buildVCard would omit the N: line and iCloud would still 403.
+      const port = await start();
+      const res = await request(
+        port,
+        {
+          method: 'POST',
+          path: '/contacts',
+          headers: { 'content-type': 'application/json' },
+        },
+        JSON.stringify({ address_book_url: BOOK_URL, full_name: '   ' }),
+      );
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body).error).toMatch(/full_name must be non-empty/);
+    });
+
     it('returns 400 when address_book_url is empty', async () => {
       const port = await start();
       const res = await request(
