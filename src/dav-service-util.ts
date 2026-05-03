@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import { createServer, IncomingMessage, Server, ServerResponse } from 'http';
 
 import { DAVClient } from 'tsdav';
@@ -52,14 +53,16 @@ export async function readJsonBodyOr400<T>(
   }
 }
 
-// Random UID used as the iCal/vCard UID and (after sanitization) the
-// filename of the new object on the DAV collection.
+// Uppercase UUID used as the iCal/vCard UID and the filename of the new
+// object on the DAV collection. iCloud's CardDAV server rejects PUTs whose
+// filename isn't a UUID-shaped string, and matches the format its own
+// clients emit (e.g. A30C0649-...-.vcf), so we mirror that.
 export function generateDavUid(): string {
-  return `nc-${Date.now()}-${Math.random().toString(36).slice(2, 10)}@nanoclaw`;
+  return randomUUID().toUpperCase();
 }
 
 export function davFilename(uid: string, extension: string): string {
-  return `${uid.replace(/[^a-zA-Z0-9-]/g, '-')}.${extension}`;
+  return `${uid}.${extension}`;
 }
 
 export function joinDavUrl(base: string, filename: string): string {
