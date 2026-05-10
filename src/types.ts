@@ -70,7 +70,12 @@ export interface ScheduledTask {
   script?: string | null;
   schedule_type: 'cron' | 'interval' | 'once';
   schedule_value: string;
-  context_mode: 'group' | 'isolated';
+  // 'group'    → resume the group's current session
+  // 'isolated' → fresh side session, doesn't touch the group's
+  // 'rotate'   → resume group session, then clear it after completion (forces
+  //              the next interactive turn to start fresh; used for periodic
+  //              housekeeping that wants Adam to wrap up + hand off to a new session)
+  context_mode: 'group' | 'isolated' | 'rotate';
   next_run: string | null;
   last_run: string | null;
   last_result: string | null;

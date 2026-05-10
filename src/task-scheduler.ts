@@ -19,6 +19,7 @@ import {
 import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { logger } from './logger.js';
+import { clearSession } from './state.js';
 import { RegisteredGroup, ScheduledTask, SendMessageFn } from './types.js';
 
 /**
@@ -176,10 +177,15 @@ async function runTask(
   let result: string | null = null;
   let error: string | null = null;
 
-  // For group context mode, use the group's current session
+  // 'group' and 'rotate' both resume the group's current session; 'rotate'
+  // additionally clears it after the task completes, forcing the next
+  // interactive turn to start fresh.
   const sessions = deps.getSessions();
-  const sessionId =
-    task.context_mode === 'group' ? sessions[task.group_folder] : undefined;
+  const resumesGroupSession =
+    task.context_mode === 'group' || task.context_mode === 'rotate';
+  const sessionId = resumesGroupSession
+    ? sessions[task.group_folder]
+    : undefined;
 
   // After the task produces a result, close the container promptly.
   // Tasks are single-turn — no need to wait IDLE_TIMEOUT (30 min) for the
@@ -275,6 +281,16 @@ async function runTask(
     result,
     error,
   });
+
+  // Rotate session only on success — a failed rotation would discard the
+  // session before Adam had a chance to promote anything to CLAUDE.md.
+  if (task.context_mode === 'rotate' && !error) {
+    clearSession(task.group_folder);
+    logger.info(
+      { taskId: task.id, group: task.group_folder },
+      'Session rotated; next interactive turn will start fresh',
+    );
+  }
 
   const nextRun = computeNextRun(task);
   const resultSummary = error
