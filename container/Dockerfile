@@ -32,12 +32,20 @@ RUN apt-get update && apt-get install -y \
 # (otherwise binaries land at /usr/local/uv, outside PATH).
 RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin INSTALLER_NO_MODIFY_PATH=1 sh
 
+# Pre-install faster-whisper so voice-message transcription works on first invocation
+# without a ~30s cold-start pip install inside the container.
+RUN pip install --break-system-packages --no-cache-dir faster-whisper
+
 # Set Chromium path for agent-browser
 ENV AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium
 ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
 
-# Install agent-browser and claude-code globally
-RUN npm install -g agent-browser @anthropic-ai/claude-code
+# Install agent-browser and claude-code globally.
+# Claude Code is pinned because the Agent SDK's IPC protocol must match the
+# Claude Code version — version drift here surfaces as a confusing spawn-time
+# error. Bump CLAUDE_CODE_VERSION and the agent-runner SDK dep together.
+ARG CLAUDE_CODE_VERSION=2.1.136
+RUN npm install -g agent-browser "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
 
 # Create app directory
 WORKDIR /app
