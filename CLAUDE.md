@@ -38,7 +38,7 @@ Single Node.js host process that owns channels, storage, scheduling, and a crede
 | `src/container-runner.ts` | Spawns agent containers, mounts, MessageStream piping |
 | `src/credential-proxy.ts` | Intercepts outbound requests, injects credentials |
 | `src/caldav-service.ts` | Host-side CalDAV service (iCloud calendar events + reminders/VTODOs) |
-| `src/carddav-service.ts` | Host-side CardDAV service (iCloud contacts, read-only) |
+| `src/carddav-service.ts` | Host-side CardDAV service (iCloud contacts; create/read/update — delete intentionally omitted) |
 | `src/dav-service-util.ts` | Shared DAV scaffolding: login manager, HTTP server, service-start factory |
 | `src/mount-security.ts` | `additionalMounts` allowlist + blocked-pattern check (enforces RW opt-in) |
 | `src/task-scheduler.ts` | Cron-driven scheduled task execution |
