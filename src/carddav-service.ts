@@ -372,7 +372,7 @@ function validateScalarFields(
         error: `${name} must be a ${nullable ? 'string or null' : 'string'}`,
       };
     }
-    if (required && v.length === 0) {
+    if (required && v.trim().length === 0) {
       return { ok: false, error: `${name} must be non-empty` };
     }
   }
@@ -446,14 +446,28 @@ function mergeNullable<T>(
   return incoming;
 }
 
-// On create we only know family/given from the request; the other three
-// N components stay empty (and the line is omitted entirely if both are too).
+// On create we derive N from the request fields. When given_name/family_name
+// are not supplied, N is synthesised from full_name (see function body).
 function nComponentsFromCreate(
-  given_name?: string,
-  family_name?: string,
-): NComponents | undefined {
-  if (!given_name && !family_name) return undefined;
-  return [family_name ?? '', given_name ?? '', '', '', ''];
+  given_name: string | undefined,
+  family_name: string | undefined,
+  full_name: string,
+): NComponents {
+  // vCard 3.0 (RFC 2426 §3.1.2) requires N. iCloud rejects PUTs without it
+  // with 403 Forbidden. When the caller provides given/family explicitly we
+  // use them; otherwise derive from full_name by splitting on whitespace —
+  // last token becomes family, everything before becomes given. Single-word
+  // names go in family so the entry sorts naturally in Apple Contacts.
+  if (given_name || family_name) {
+    return [family_name ?? '', given_name ?? '', '', '', ''];
+  }
+  const parts = full_name
+    .trim()
+    .split(/\s+/)
+    .filter((p) => p !== '');
+  if (parts.length <= 1) return [parts[0] ?? '', '', '', '', ''];
+  const family = parts.pop()!;
+  return [family, parts.join(' '), '', '', ''];
 }
 
 // Only family/given come from the request; additional/prefix/suffix round-trip
@@ -624,7 +638,11 @@ function buildCarddavHandler({
       const vCardString = buildVCard({
         uid,
         full_name: body.full_name,
-        n_components: nComponentsFromCreate(body.given_name, body.family_name),
+        n_components: nComponentsFromCreate(
+          body.given_name,
+          body.family_name,
+          body.full_name,
+        ),
         organization: body.organization,
         title: body.title,
         phones: phones.value,

@@ -1,6 +1,12 @@
 /**
  * Stdio MCP server for CardDAV. Thin fetch forwarder to the host-side
  * service (src/carddav-service.ts).
+ *
+ * CRU-only by design: list/search/create/update/refresh are exposed; delete
+ * is not, and the host service has no DELETE handler either. Removing a
+ * contact is destructive and easy to do by mistake — the user can do it
+ * from Contacts.app where they get an undo affordance. Don't add a delete
+ * tool without first confirming Matthew wants the capability.
  */
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -83,7 +89,7 @@ server.tool(
 
 server.tool(
   'update_contact',
-  'Update fields on an existing contact. Omitted fields stay unchanged. Pass null on a scalar field (e.g. organization) to clear it. Pass a new array for phones/emails to fully replace the existing list. Note: vCard fields the service does not track (PHOTO, ADR, X- custom fields) are dropped on update — only call this when that tradeoff is acceptable.',
+  'Update fields on an existing contact. Omitted fields stay unchanged. Pass null on a scalar field (e.g. organization) to clear it. Pass a new array for phones/emails to fully replace the existing list. Note: vCard fields the service does not track (PHOTO, ADR, X- custom fields) are dropped on update — only call this when that tradeoff is acceptable. Deletion is intentionally not exposed: this MCP is CRU-only by design (preventing accidental contact loss). If the user asks to delete a contact, tell them to do it from the Contacts app on their device — do not assume a delete tool is missing or broken.',
   {
     object_url: z
       .string()

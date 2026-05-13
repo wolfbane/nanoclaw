@@ -273,7 +273,9 @@ describe('caldav-service', () => {
     expect(res.statusCode).toBe(201);
     const body = JSON.parse(res.body);
     expect(body.url).toMatch(/^https:\/\/p01\/main\//);
-    expect(body.uid).toMatch(/^nc-/);
+    expect(body.uid).toMatch(
+      /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$/,
+    );
 
     expect(davClientState.lastCreate?.calendarUrl).toBe('https://p01/main/');
     expect(davClientState.lastCreate?.iCalString).toMatch(/BEGIN:VEVENT/);
