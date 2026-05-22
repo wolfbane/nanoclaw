@@ -1,6 +1,8 @@
 // Provider self-registration barrel.
 // Each import triggers the provider module's registerProvider() call at top
-// level. Phase 2 adds claude. Codex is added in Phase 4.
+// level. Selection is by AGENT_PROVIDER env (default 'claude'); see
+// runQuery() in ../index.ts.
 
 import './claude.js';
+import './codex.js';
 import './mock.js';
