@@ -257,6 +257,35 @@ function buildVolumeMounts(
     mounts.push(...validatedMounts);
   }
 
+  // Codex provider: mount a per-session ~/.codex directory containing the
+  // host's auth.json. The in-container codex CLI writes its config.toml here
+  // at runtime; we don't want it touching the host's ~/.codex (which the
+  // host's own `codex` CLI may be using).
+  if (group.containerConfig?.env?.AGENT_PROVIDER === 'codex') {
+    const sessionCodexDir = path.join(
+      DATA_DIR,
+      'sessions',
+      group.folder,
+      'codex',
+    );
+    fs.mkdirSync(sessionCodexDir, { recursive: true });
+
+    const hostHome = process.env.HOME;
+    if (hostHome) {
+      const hostAuth = path.join(hostHome, '.codex', 'auth.json');
+      const sessionAuth = path.join(sessionCodexDir, 'auth.json');
+      if (fs.existsSync(hostAuth) && !fs.existsSync(sessionAuth)) {
+        fs.copyFileSync(hostAuth, sessionAuth);
+      }
+    }
+
+    mounts.push({
+      hostPath: sessionCodexDir,
+      containerPath: '/home/node/.codex',
+      readonly: false,
+    });
+  }
+
   return mounts;
 }
 
@@ -264,6 +293,7 @@ function buildContainerArgs(
   mounts: VolumeMount[],
   containerName: string,
   isMain: boolean,
+  extraEnv: Record<string, string> = {},
 ): string[] {
   const args: string[] = ['run', '-i', '--rm', '--name', containerName];
 
@@ -298,6 +328,13 @@ function buildContainerArgs(
   );
   if (centsMount) {
     args.push('-e', `CENTS_HOME=${centsMount.containerPath}`);
+  }
+
+  // Per-group container_config.env passthrough. Sole gate to provider
+  // selection (AGENT_PROVIDER) and provider-specific config (e.g.
+  // CODEX_MODEL, OPENAI_API_KEY). Values are passed verbatim.
+  for (const [k, v] of Object.entries(extraEnv)) {
+    args.push('-e', `${k}=${v}`);
   }
 
   // Mirror the host's auth method with a placeholder value.
@@ -358,7 +395,12 @@ export async function runContainerAgent(
   const mounts = buildVolumeMounts(group, input.isMain);
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
   const containerName = `nanoclaw-${safeName}-${Date.now()}`;
-  const containerArgs = buildContainerArgs(mounts, containerName, input.isMain);
+  const containerArgs = buildContainerArgs(
+    mounts,
+    containerName,
+    input.isMain,
+    group.containerConfig?.env ?? {},
+  );
 
   logger.debug(
     {
