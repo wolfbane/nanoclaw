@@ -98,6 +98,26 @@ function createSchema(database: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_outbound_chat_time
       ON outbound_messages(chat_jid, sent_at);
+
+    CREATE TABLE IF NOT EXISTS api_usage (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ts TEXT NOT NULL,
+      path TEXT NOT NULL,
+      method TEXT NOT NULL,
+      status INTEGER NOT NULL,
+      source_ip TEXT,
+      model TEXT,
+      request_id TEXT,
+      input_tokens INTEGER DEFAULT 0,
+      cache_creation_input_tokens INTEGER DEFAULT 0,
+      cache_read_input_tokens INTEGER DEFAULT 0,
+      output_tokens INTEGER DEFAULT 0,
+      duration_ms INTEGER NOT NULL,
+      is_streaming INTEGER DEFAULT 0,
+      cost_usd REAL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_api_usage_ts ON api_usage(ts);
+    CREATE INDEX IF NOT EXISTS idx_api_usage_model_ts ON api_usage(model, ts);
   `);
 
   // Add context_mode column if it doesn't exist (migration for existing DBs)
@@ -626,6 +646,50 @@ export function logTaskRun(log: TaskRunLog): void {
     log.status,
     log.result,
     log.error,
+  );
+}
+
+export interface ApiUsageRow {
+  ts: string;
+  path: string;
+  method: string;
+  status: number;
+  source_ip: string | null;
+  model: string | null;
+  request_id: string | null;
+  input_tokens: number;
+  cache_creation_input_tokens: number;
+  cache_read_input_tokens: number;
+  output_tokens: number;
+  duration_ms: number;
+  is_streaming: boolean;
+  cost_usd: number;
+}
+
+export function recordApiUsage(row: ApiUsageRow): void {
+  db.prepare(
+    `
+    INSERT INTO api_usage (
+      ts, path, method, status, source_ip, model, request_id,
+      input_tokens, cache_creation_input_tokens, cache_read_input_tokens,
+      output_tokens, duration_ms, is_streaming, cost_usd
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `,
+  ).run(
+    row.ts,
+    row.path,
+    row.method,
+    row.status,
+    row.source_ip,
+    row.model,
+    row.request_id,
+    row.input_tokens,
+    row.cache_creation_input_tokens,
+    row.cache_read_input_tokens,
+    row.output_tokens,
+    row.duration_ms,
+    row.is_streaming ? 1 : 0,
+    row.cost_usd,
   );
 }
 
