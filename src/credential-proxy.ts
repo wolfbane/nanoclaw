@@ -228,7 +228,8 @@ export function startCredentialProxy(
                   let decoded: Buffer = raw;
                   try {
                     if (encoding === 'gzip') decoded = gunzipSync(raw);
-                    else if (encoding === 'br') decoded = brotliDecompressSync(raw);
+                    else if (encoding === 'br')
+                      decoded = brotliDecompressSync(raw);
                     else if (encoding === 'deflate') decoded = inflateSync(raw);
                   } catch {
                     // Streaming gzip may not be syncDecodable; fall back to raw
@@ -256,10 +257,7 @@ export function startCredentialProxy(
                     cost_usd: cost,
                   });
                 } catch (err) {
-                  logger.warn(
-                    { err, url: req.url },
-                    'usage tracking failed',
-                  );
+                  logger.warn({ err, url: req.url }, 'usage tracking failed');
                 }
               });
             });

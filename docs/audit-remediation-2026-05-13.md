@@ -205,3 +205,25 @@ Week 3:
 ```
 
 Total estimated effort if one human does it serially: ~4-5 days. If buckets 1-3 parallelize: ~2.5-3 days.
+
+---
+
+## 2026-05-22 — Session log
+
+Out-of-cycle work driven by observed friction, not the original audit. Logged here so the decisions and open follow-ups don't live only in chat history.
+
+### Shipped
+
+- **Briefs: script-driven calendar pre-fetch (Option C).** Morning + evening brief prompts (in `scheduled_tasks` rows, not in git) now have a bash `script` field that fetches calendars + events + reminders from the host CalDAV service in parallel, injects them as `data`, and instructs the agent to format-only — no `list_events`/`list_reminders` calls, no consulting memory for calendar facts. Closes the recurring "from memory but no event on calendar yet" leak (3 occurrences May 14–19). Old prompts backed up in `docs/backups/brief-prompts-2026-05-20.md` for rollback.
+- **Briefs: `<internal>` wrap on final response.** Briefs were producing a leaked second Telegram message because the agent's final response text wasn't suppressed. Prompt now mandates `<internal>...</internal>` around the wrap-up. Verified: leak gone.
+- **`groups/telegram_main/CLAUDE.md` (gitignored; user data)** — added two principles: "Reference, don't restate" (pairs with the existing "Update the record when resolving") and "Voice messages" (faster-whisper invocation pattern; agent was incorrectly claiming no transcription was possible despite preinstall in commit `94a3fa2`).
+- **Per-request Anthropic usage tracking.** `src/credential-proxy.ts` now tees responses (handling gzip/brotli/deflate-encoded SSE), parses `usage` from `message_start` + `message_delta`, computes cost, writes to a new `api_usage` table. Summary script at `scripts/usage-summary.ts` (default daily totals; `--by-model`, `--by-source`, `--recent N`).
+
+### Open follow-ups
+
+- [ ] **`api_usage` group/task attribution.** Today's table has `source_ip` only. Correlating request timestamp against active container state would let us answer "which task is most expensive." Useful once we have a few days of data and want to break down costs.
+- [ ] **Pricing-table maintenance.** Hardcoded model→price map in `src/credential-proxy.ts`. If Anthropic changes prices, edit there. Worth a comment pointing at `https://www.anthropic.com/pricing` (already added inline).
+- [ ] **Reminders multi-list aggregation.** `GET /reminders` on the host CalDAV service takes one `calendar_url`. If Matthew ever adds a second Apple Reminders list, the brief script won't see it. Deferred — user confirmed single list today.
+- [ ] **Cents-data interpretation cost trend.** NanoClaw now interprets cents data on demand, billed to the `clawbackup` key (via the proxy). Watch `usage-summary.ts` over the next 1–2 weeks; if `clawbackup` daily climbs meaningfully above the ~$2.30 baseline, investigate which sessions are doing the heavy cents work and whether Haiku is sufficient for parts of it.
+- [ ] **`.env.bak.2026-04-21`, `.env.bak.pre-multibot-revert`.** Untracked files at repo root from before this session. Either delete or move out of the working tree.
+- [ ] **Briefs: thread-section drift.** New brief prompts forbid dates/times/locations in *Threads*. If the failure mode re-emerges in a new shape, escalate to two-task split (Option D from the analysis): one task formats calendar from script data, a separate task with no calendar tools at all generates the threads roundup.
