@@ -89,4 +89,11 @@ export type ProviderEvent =
    * event (tool call, thinking, partial message, anything) so the
    * poll-loop's idle timer stays honest during long tool runs.
    */
-  | { type: 'activity' };
+  | { type: 'activity' }
+  /**
+   * Fork-local extension. The Claude provider emits this on every assistant
+   * message; the outer loop uses the uuid as `resumeSessionAt` on the next
+   * query so IPC messages piped in mid-turn don't re-process already-seen
+   * assistant content. Non-Claude providers do not emit this event.
+   */
+  | { type: 'claude_assistant_uuid'; uuid: string };
