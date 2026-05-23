@@ -65,6 +65,24 @@ interface VolumeMount {
   readonly: boolean;
 }
 
+// Env vars that the container runner sets itself for credential/service
+// routing and the privilege boundary. Group container_config.env MUST NOT
+// be allowed to override these — doing so would bypass the credential
+// proxy (e.g. by pointing ANTHROPIC_BASE_URL at a non-proxy host) or
+// confuse the privilege model (HOME, RUN_UID/RUN_GID).
+const RESERVED_CONTAINER_ENV = new Set([
+  'ANTHROPIC_BASE_URL',
+  'ANTHROPIC_API_KEY',
+  'CLAUDE_CODE_OAUTH_TOKEN',
+  'NANOCLAW_CALDAV_SERVICE_URL',
+  'NANOCLAW_CARDDAV_SERVICE_URL',
+  'CENTS_HOME',
+  'HOME',
+  'RUN_UID',
+  'RUN_GID',
+  'TZ',
+]);
+
 // Names containing any of these substrings have their values redacted when
 // logging container args. Provider env passthrough (e.g. OPENAI_API_KEY) is
 // the main reason this exists — pre-passthrough we never injected secrets
@@ -376,8 +394,18 @@ function buildContainerArgs(
 
   // Per-group container_config.env passthrough. Sole gate to provider
   // selection (AGENT_PROVIDER) and provider-specific config (e.g.
-  // CODEX_MODEL, OPENAI_API_KEY). Values are passed verbatim.
+  // CODEX_MODEL, OPENAI_API_KEY). Values are passed verbatim BUT reserved
+  // names (credential-proxy routing, HOME, RUN_UID, etc.) are stripped —
+  // otherwise a group could redirect Anthropic traffic away from the
+  // proxy and bypass credential isolation entirely.
   for (const [k, v] of Object.entries(extraEnv)) {
+    if (RESERVED_CONTAINER_ENV.has(k)) {
+      logger.warn(
+        { key: k },
+        'Ignoring container_config.env override of reserved env var',
+      );
+      continue;
+    }
     args.push('-e', `${k}=${v}`);
   }
 
@@ -395,6 +423,14 @@ function buildContainerArgs(
   // Runtime-specific args for host gateway resolution
   args.push(...hostGatewayArgs());
 
+  // Always set HOME=/home/node. The container image is built around that
+  // path (chmod 777 /home/node, codex provider mount at /home/node/.codex,
+  // etc.) regardless of whether the running process is root (main groups,
+  // pre-setpriv) or the dropped node user. Without an explicit override,
+  // root's HOME defaults to /root which would silently miss provider state
+  // mounted at /home/node.
+  args.push('-e', 'HOME=/home/node');
+
   // Run as host user so bind-mounted files are accessible.
   // Skip when running as root (uid 0), as the container's node user (uid 1000),
   // or when getuid is unavailable (native Windows without WSL).
@@ -409,7 +445,6 @@ function buildContainerArgs(
     } else {
       args.push('--user', `${hostUid}:${hostGid}`);
     }
-    args.push('-e', 'HOME=/home/node');
   }
 
   for (const mount of mounts) {

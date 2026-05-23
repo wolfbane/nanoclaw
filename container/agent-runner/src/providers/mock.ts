@@ -48,10 +48,14 @@ export class MockProvider implements AgentProvider {
           waiting = null;
         }
 
-        // Drain remaining
-        while (pending.length > 0) {
-          const msg = pending.shift()!;
-          yield { type: 'result', text: responseFactory(msg) };
+        // Drain remaining messages — but only if we ended cleanly. abort()
+        // means "cancel immediately"; drainage would defeat the purpose
+        // (test fixtures expect abort to be the firm cancellation primitive).
+        if (!aborted) {
+          while (pending.length > 0) {
+            const msg = pending.shift()!;
+            yield { type: 'result', text: responseFactory(msg) };
+          }
         }
       },
     };
