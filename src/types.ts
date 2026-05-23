@@ -35,6 +35,14 @@ export interface AllowedRoot {
 export interface ContainerConfig {
   additionalMounts?: AdditionalMount[];
   timeout?: number; // Default: 300000 (5 minutes)
+  /**
+   * Per-group environment variables passed to the container at spawn time.
+   * Examples:
+   *   - AGENT_PROVIDER: select the agent provider ('claude' | 'codex' | 'mock')
+   *   - CODEX_MODEL, OPENAI_API_KEY, OPENAI_BASE_URL: configure codex
+   * Values passed as-is via `-e KEY=VALUE`. No interpolation.
+   */
+  env?: Record<string, string>;
 }
 
 export interface RegisteredGroup {

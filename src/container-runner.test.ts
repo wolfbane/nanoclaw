@@ -224,3 +224,48 @@ describe('container-runner timeout behavior', () => {
     expect(result.newSessionId).toBe('session-456');
   });
 });
+
+describe('redactContainerArgs', () => {
+  it('redacts values for keys containing KEY / TOKEN / SECRET / PASSWORD', async () => {
+    const { redactContainerArgs } = await import('./container-runner.js');
+    const out = redactContainerArgs([
+      'run',
+      '-e',
+      'OPENAI_API_KEY=sk-abc123',
+      '-e',
+      'GITHUB_TOKEN=ghp_xxx',
+      '-e',
+      'DB_PASSWORD=hunter2',
+      '-e',
+      'MY_SECRET=top',
+      '-e',
+      'TZ=America/Los_Angeles',
+      '-e',
+      'CODEX_MODEL=gpt-5.4-mini',
+      'nanoclaw-agent:latest',
+    ]);
+    expect(out).toEqual([
+      'run',
+      '-e',
+      'OPENAI_API_KEY=[REDACTED]',
+      '-e',
+      'GITHUB_TOKEN=[REDACTED]',
+      '-e',
+      'DB_PASSWORD=[REDACTED]',
+      '-e',
+      'MY_SECRET=[REDACTED]',
+      '-e',
+      'TZ=America/Los_Angeles',
+      '-e',
+      'CODEX_MODEL=gpt-5.4-mini',
+      'nanoclaw-agent:latest',
+    ]);
+  });
+
+  it('leaves non-env args untouched', async () => {
+    const { redactContainerArgs } = await import('./container-runner.js');
+    expect(
+      redactContainerArgs(['run', '--rm', '-v', '/host:/container', 'image']),
+    ).toEqual(['run', '--rm', '-v', '/host:/container', 'image']);
+  });
+});

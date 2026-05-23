@@ -30,6 +30,11 @@ import {
 } from './container-runtime.js';
 import { detectAuthMode } from './credential-proxy.js';
 import { validateAdditionalMounts } from './mount-security.js';
+// Side-effect import: triggers self-registration of host-side provider configs
+// (codex, etc.) into the provider-container-registry. Must come before any
+// lookup of getProviderContainerConfig() below.
+import './providers/index.js';
+import { getProviderContainerConfig } from './providers/provider-container-registry.js';
 import { RegisteredGroup } from './types.js';
 
 // Sentinel markers for robust output parsing (must match agent-runner)
@@ -60,6 +65,64 @@ interface VolumeMount {
   readonly: boolean;
 }
 
+// Env vars that the container runner sets itself for credential/service
+// routing and the privilege boundary. Group container_config.env MUST NOT
+// be allowed to override these — doing so would bypass the credential
+// proxy (e.g. by pointing ANTHROPIC_BASE_URL at a non-proxy host) or
+// confuse the privilege model (HOME, RUN_UID/RUN_GID).
+const RESERVED_CONTAINER_ENV = new Set([
+  'ANTHROPIC_BASE_URL',
+  'ANTHROPIC_API_KEY',
+  'CLAUDE_CODE_OAUTH_TOKEN',
+  'NANOCLAW_CALDAV_SERVICE_URL',
+  'NANOCLAW_CARDDAV_SERVICE_URL',
+  'CENTS_HOME',
+  'HOME',
+  'RUN_UID',
+  'RUN_GID',
+  'TZ',
+]);
+
+// Names containing any of these substrings have their values redacted when
+// logging container args. Provider env passthrough (e.g. OPENAI_API_KEY) is
+// the main reason this exists — pre-passthrough we never injected secrets
+// here, since the credential proxy handles Anthropic auth.
+const SENSITIVE_ENV_PATTERNS = [
+  /KEY/i,
+  /TOKEN/i,
+  /SECRET/i,
+  /PASSWORD/i,
+  /PASSWD/i,
+  /CREDENTIAL/i,
+];
+
+/**
+ * Returns container args with sensitive env values redacted. Walks the args
+ * list looking for `-e KEY=VALUE` pairs and masks the value when KEY matches
+ * any SENSITIVE_ENV_PATTERNS entry. Used at log sites only — the live spawn
+ * still receives the original args array.
+ */
+export function redactContainerArgs(args: readonly string[]): string[] {
+  const redacted: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '-e' && i + 1 < args.length) {
+      const next = args[i + 1];
+      const eq = next.indexOf('=');
+      if (eq > 0) {
+        const key = next.slice(0, eq);
+        if (SENSITIVE_ENV_PATTERNS.some((re) => re.test(key))) {
+          redacted.push(a, `${key}=[REDACTED]`);
+          i++;
+          continue;
+        }
+      }
+    }
+    redacted.push(a);
+  }
+  return redacted;
+}
+
 function collectTsStats(dir: string): { count: number; maxMtimeMs: number } {
   let count = 0;
   let maxMtimeMs = 0;
@@ -80,11 +143,17 @@ function collectTsStats(dir: string): { count: number; maxMtimeMs: number } {
   return { count, maxMtimeMs };
 }
 
+interface VolumeMountsResult {
+  mounts: VolumeMount[];
+  providerEnv: Record<string, string>;
+}
+
 function buildVolumeMounts(
   group: RegisteredGroup,
   isMain: boolean,
-): VolumeMount[] {
+): VolumeMountsResult {
   const mounts: VolumeMount[] = [];
+  let providerEnv: Record<string, string> = {};
   const projectRoot = process.cwd();
   const groupDir = resolveGroupFolderPath(group.folder);
 
@@ -257,13 +326,36 @@ function buildVolumeMounts(
     mounts.push(...validatedMounts);
   }
 
-  return mounts;
+  // Provider-specific host-side container config (mounts + env). Each provider
+  // that needs host-side setup registers a callback via
+  // src/providers/provider-container-registry.ts; we look up the active
+  // provider here and merge its contribution into the spawn args.
+  //
+  // Resolved once per spawn — the callback creates per-session dirs / copies
+  // auth files and we don't want to do that twice (Copilot review on PR #3).
+  const providerName = group.containerConfig?.env?.AGENT_PROVIDER;
+  if (providerName) {
+    const providerConfig = getProviderContainerConfig(providerName);
+    if (providerConfig) {
+      const sessionDir = path.join(DATA_DIR, 'sessions', group.folder);
+      const contribution = providerConfig({
+        sessionDir,
+        agentGroupId: group.folder,
+        hostEnv: process.env,
+      });
+      if (contribution.mounts) mounts.push(...contribution.mounts);
+      if (contribution.env) providerEnv = contribution.env;
+    }
+  }
+
+  return { mounts, providerEnv };
 }
 
 function buildContainerArgs(
   mounts: VolumeMount[],
   containerName: string,
   isMain: boolean,
+  extraEnv: Record<string, string> = {},
 ): string[] {
   const args: string[] = ['run', '-i', '--rm', '--name', containerName];
 
@@ -300,6 +392,23 @@ function buildContainerArgs(
     args.push('-e', `CENTS_HOME=${centsMount.containerPath}`);
   }
 
+  // Per-group container_config.env passthrough. Sole gate to provider
+  // selection (AGENT_PROVIDER) and provider-specific config (e.g.
+  // CODEX_MODEL, OPENAI_API_KEY). Values are passed verbatim BUT reserved
+  // names (credential-proxy routing, HOME, RUN_UID, etc.) are stripped —
+  // otherwise a group could redirect Anthropic traffic away from the
+  // proxy and bypass credential isolation entirely.
+  for (const [k, v] of Object.entries(extraEnv)) {
+    if (RESERVED_CONTAINER_ENV.has(k)) {
+      logger.warn(
+        { key: k },
+        'Ignoring container_config.env override of reserved env var',
+      );
+      continue;
+    }
+    args.push('-e', `${k}=${v}`);
+  }
+
   // Mirror the host's auth method with a placeholder value.
   // API key mode: SDK sends x-api-key, proxy replaces with real key.
   // OAuth mode:   SDK exchanges placeholder token for temp API key,
@@ -313,6 +422,14 @@ function buildContainerArgs(
 
   // Runtime-specific args for host gateway resolution
   args.push(...hostGatewayArgs());
+
+  // Always set HOME=/home/node. The container image is built around that
+  // path (chmod 777 /home/node, codex provider mount at /home/node/.codex,
+  // etc.) regardless of whether the running process is root (main groups,
+  // pre-setpriv) or the dropped node user. Without an explicit override,
+  // root's HOME defaults to /root which would silently miss provider state
+  // mounted at /home/node.
+  args.push('-e', 'HOME=/home/node');
 
   // Run as host user so bind-mounted files are accessible.
   // Skip when running as root (uid 0), as the container's node user (uid 1000),
@@ -328,7 +445,6 @@ function buildContainerArgs(
     } else {
       args.push('--user', `${hostUid}:${hostGid}`);
     }
-    args.push('-e', 'HOME=/home/node');
   }
 
   for (const mount of mounts) {
@@ -355,10 +471,19 @@ export async function runContainerAgent(
   const groupDir = resolveGroupFolderPath(group.folder);
   fs.mkdirSync(groupDir, { recursive: true });
 
-  const mounts = buildVolumeMounts(group, input.isMain);
+  const { mounts, providerEnv } = buildVolumeMounts(group, input.isMain);
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
   const containerName = `nanoclaw-${safeName}-${Date.now()}`;
-  const containerArgs = buildContainerArgs(mounts, containerName, input.isMain);
+  // Per-group env passthrough is merged with provider-registered env. The
+  // group config wins on conflicts (last-write into the object), which lets
+  // groups override e.g. CODEX_MODEL even when the provider passes through
+  // a host env default.
+  const containerArgs = buildContainerArgs(
+    mounts,
+    containerName,
+    input.isMain,
+    { ...providerEnv, ...(group.containerConfig?.env ?? {}) },
+  );
 
   logger.debug(
     {
@@ -368,7 +493,7 @@ export async function runContainerAgent(
         (m) =>
           `${m.hostPath} -> ${m.containerPath}${m.readonly ? ' (ro)' : ''}`,
       ),
-      containerArgs: containerArgs.join(' '),
+      containerArgs: redactContainerArgs(containerArgs).join(' '),
     },
     'Container mount configuration',
   );
@@ -608,7 +733,7 @@ export async function runContainerAgent(
         }
         logLines.push(
           `=== Container Args ===`,
-          containerArgs.join(' '),
+          redactContainerArgs(containerArgs).join(' '),
           ``,
           `=== Mounts ===`,
           mounts

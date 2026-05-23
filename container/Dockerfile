@@ -47,6 +47,12 @@ ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
 ARG CLAUDE_CODE_VERSION=2.1.136
 RUN npm install -g agent-browser "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
 
+# Install Codex CLI for the `codex` agent provider.
+# Used by container/agent-runner/src/providers/codex.ts when a group has
+# AGENT_PROVIDER=codex in its container_config.env.
+ARG CODEX_VERSION=0.124.0
+RUN npm install -g "@openai/codex@${CODEX_VERSION}"
+
 # Create app directory
 WORKDIR /app
 

@@ -269,6 +269,11 @@ describe('stripInternalTags', () => {
   it('returns empty string when text is only internal tags', () => {
     expect(stripInternalTags('<internal>only this</internal>')).toBe('');
   });
+
+  it('strips unclosed internal tag through end of string', () => {
+    expect(stripInternalTags('hello <internal>trailing summary')).toBe('hello');
+    expect(stripInternalTags('<internal>Sent the evening wrap.')).toBe('');
+  });
 });
 
 describe('formatOutbound', () => {
