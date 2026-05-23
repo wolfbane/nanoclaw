@@ -24,12 +24,24 @@ function main(): void {
   let byModel = false;
   let bySource = false;
   let recent = 0;
+  function readIntArg(flag: string, raw: string | undefined): number {
+    if (raw === undefined) {
+      console.error(`Error: ${flag} requires a numeric value`);
+      process.exit(1);
+    }
+    const n = parseInt(raw, 10);
+    if (!Number.isFinite(n) || n <= 0) {
+      console.error(`Error: ${flag} expects a positive integer, got "${raw}"`);
+      process.exit(1);
+    }
+    return n;
+  }
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === '--days') days = parseInt(argv[++i], 10);
+    if (a === '--days') days = readIntArg('--days', argv[++i]);
     else if (a === '--by-model') byModel = true;
     else if (a === '--by-source') bySource = true;
-    else if (a === '--recent') recent = parseInt(argv[++i], 10);
+    else if (a === '--recent') recent = readIntArg('--recent', argv[++i]);
     else if (a === '-h' || a === '--help') {
       console.log(
         'Usage: tsx scripts/usage-summary.ts [--days N] [--by-model] [--by-source] [--recent N]',

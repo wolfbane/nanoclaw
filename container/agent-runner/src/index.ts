@@ -631,6 +631,25 @@ async function main(): Promise<void> {
 
   if (isSessionSlashCommand) {
     log(`Handling session command: ${trimmedPrompt}`);
+
+    // Session slash commands are Claude-Code-native — the SDK exposes them
+    // via `query()`. Non-Claude providers (codex, etc.) don't share that
+    // surface, and silently routing through the Claude SDK would either
+    // (a) fail with stale-session errors when the group has been running
+    // on a different provider, or (b) charge Anthropic tokens for a session
+    // command that the user expected to operate on their other provider.
+    // Surface the limitation explicitly instead.
+    const activeProvider = process.env.AGENT_PROVIDER ?? 'claude';
+    if (activeProvider !== 'claude') {
+      writeOutput({
+        status: 'error',
+        result: null,
+        error: `Session slash command \`${trimmedPrompt}\` is not supported on the \`${activeProvider}\` provider yet. Switch this group to the claude provider or send a regular message.`,
+        newSessionId: sessionId,
+      });
+      return;
+    }
+
     let slashSessionId: string | undefined;
     let compactBoundarySeen = false;
     let hadError = false;

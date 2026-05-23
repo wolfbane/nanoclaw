@@ -21,6 +21,12 @@ import path from 'path';
 
 import { registerProviderContainerConfig } from './provider-container-registry.js';
 
+// The container's runtime HOME is set to /home/node by the entrypoint
+// (see container-runner.ts where it pushes `-e HOME=/home/node`). The codex
+// CLI reads ~/.codex relative to that HOME, so this constant must match the
+// container's HOME value. Keep them in sync if either side changes.
+const CONTAINER_HOME = '/home/node';
+
 registerProviderContainerConfig('codex', (ctx) => {
   const codexDir = path.join(ctx.sessionDir, 'codex');
   fs.mkdirSync(codexDir, { recursive: true });
@@ -51,7 +57,7 @@ registerProviderContainerConfig('codex', (ctx) => {
     mounts: [
       {
         hostPath: codexDir,
-        containerPath: '/home/node/.codex',
+        containerPath: path.posix.join(CONTAINER_HOME, '.codex'),
         readonly: false,
       },
     ],
