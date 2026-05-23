@@ -33,7 +33,10 @@ export function formatMessages(
 }
 
 export function stripInternalTags(text: string): string {
-  return text.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
+  // Match a closing tag OR end-of-string. Some providers (notably Codex)
+  // occasionally emit an unclosed <internal> when wrapping a trailing summary;
+  // without the EOS fallback the raw tag leaks to the user.
+  return text.replace(/<internal>[\s\S]*?(<\/internal>|$)/g, '').trim();
 }
 
 export function formatOutbound(rawText: string, channel?: ChannelType): string {
