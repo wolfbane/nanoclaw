@@ -173,8 +173,15 @@ export class CodexProvider implements AgentProvider {
           // One turn = one channel of streaming events. Each notification
           // from the app-server yields an `activity` first (so the
           // poll-loop's idle timer stays honest) and then, where relevant,
-          // an init / result / progress event.
-          yield* runOneTurn(
+          // an init / result / progress / error event.
+          //
+          // If runOneTurn yields an error, treat the server as compromised:
+          // exit the outer loop so finally{} kills the app-server. The next
+          // query() will spawn a fresh server. Without this, subsequent turns
+          // run against a thread/server that may be in a wedged or busy state
+          // (Copilot review on PR #3).
+          let turnErrored = false;
+          for await (const ev of runOneTurn(
             server,
             threadId!,
             text,
@@ -184,7 +191,11 @@ export class CodexProvider implements AgentProvider {
             () => {
               initYielded = true;
             },
-          );
+          )) {
+            yield ev;
+            if (ev.type === 'error') turnErrored = true;
+          }
+          if (turnErrored) return;
         }
       } finally {
         killCodexAppServer(server);

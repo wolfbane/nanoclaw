@@ -489,6 +489,18 @@ async function runQuery(
       log(
         `Provider error (retryable=${ev.retryable}${ev.classification ? `, class=${ev.classification}` : ''}): ${ev.message}`,
       );
+      // Surface provider errors as an OUTPUT marker so the host's cursor
+      // semantics fire (rollback if no other output was emitted; visible
+      // error reply if some was). Previously the event was silently logged,
+      // making provider failures look like a silent stall.
+      writeOutput({
+        status: 'error',
+        result: null,
+        error: ev.message,
+        newSessionId,
+      });
+      agentQuery.abort();
+      break;
     }
     // 'activity' is liveness-only; no per-event log to avoid noise
   }
