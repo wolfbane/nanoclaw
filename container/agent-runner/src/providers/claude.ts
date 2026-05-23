@@ -142,8 +142,8 @@ export class ClaudeProvider implements AgentProvider {
       // Pin to Sonnet with 1M context window. Default (Opus) is ~5× the
       // per-token cost; this was dropped by commit f77f9ce during an unrelated
       // auto-compact change and quietly drove the per-request cost spike.
-      // Override via CLAUDE_MODEL env if needed.
-      model: process.env.CLAUDE_MODEL ?? 'sonnet[1m]',
+      // Resolution order: ProviderOptions.model > CLAUDE_MODEL env > 'sonnet[1m]'.
+      model: this.opts.model ?? process.env.CLAUDE_MODEL ?? 'sonnet[1m]',
       systemPrompt,
       allowedTools,
       env,
