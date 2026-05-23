@@ -630,6 +630,10 @@ async function main(): Promise<void> {
         options: {
           cwd: '/workspace/group',
           resume: sessionId,
+          // Match the provider's model pin so /compact doesn't fall back to
+          // the SDK's Opus default. The /compact path is a direct SDK call,
+          // not routed through ClaudeProvider, so it needs its own override.
+          model: process.env.CLAUDE_MODEL ?? 'sonnet[1m]',
           systemPrompt: undefined,
           allowedTools: [],
           env: sdkEnv,
