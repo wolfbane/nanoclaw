@@ -30,6 +30,11 @@ import {
 } from './container-runtime.js';
 import { detectAuthMode } from './credential-proxy.js';
 import { validateAdditionalMounts } from './mount-security.js';
+// Side-effect import: triggers self-registration of host-side provider configs
+// (codex, etc.) into the provider-container-registry. Must come before any
+// lookup of getProviderContainerConfig() below.
+import './providers/index.js';
+import { getProviderContainerConfig } from './providers/provider-container-registry.js';
 import { RegisteredGroup } from './types.js';
 
 // Sentinel markers for robust output parsing (must match agent-runner)
@@ -257,36 +262,46 @@ function buildVolumeMounts(
     mounts.push(...validatedMounts);
   }
 
-  // Codex provider: mount a per-session ~/.codex directory containing the
-  // host's auth.json. The in-container codex CLI writes its config.toml here
-  // at runtime; we don't want it touching the host's ~/.codex (which the
-  // host's own `codex` CLI may be using).
-  if (group.containerConfig?.env?.AGENT_PROVIDER === 'codex') {
-    const sessionCodexDir = path.join(
-      DATA_DIR,
-      'sessions',
-      group.folder,
-      'codex',
-    );
-    fs.mkdirSync(sessionCodexDir, { recursive: true });
-
-    const hostHome = process.env.HOME;
-    if (hostHome) {
-      const hostAuth = path.join(hostHome, '.codex', 'auth.json');
-      const sessionAuth = path.join(sessionCodexDir, 'auth.json');
-      if (fs.existsSync(hostAuth) && !fs.existsSync(sessionAuth)) {
-        fs.copyFileSync(hostAuth, sessionAuth);
-      }
+  // Provider-specific host-side container config (mounts + env). Each provider
+  // that needs host-side setup registers a callback via
+  // src/providers/provider-container-registry.ts; we look up the active
+  // provider here and merge its contribution into the spawn args.
+  const providerName = group.containerConfig?.env?.AGENT_PROVIDER;
+  if (providerName) {
+    const providerConfig = getProviderContainerConfig(providerName);
+    if (providerConfig) {
+      const sessionDir = path.join(DATA_DIR, 'sessions', group.folder);
+      const contribution = providerConfig({
+        sessionDir,
+        agentGroupId: group.folder,
+        hostEnv: process.env,
+      });
+      if (contribution.mounts) mounts.push(...contribution.mounts);
     }
-
-    mounts.push({
-      hostPath: sessionCodexDir,
-      containerPath: '/home/node/.codex',
-      readonly: false,
-    });
   }
 
   return mounts;
+}
+
+/**
+ * Returns the env-var contribution from the active provider's registered host
+ * config, if any. Kept separate from buildVolumeMounts so the spawn args
+ * builder can merge it into its env array in one place.
+ */
+function resolveProviderEnvContribution(
+  group: RegisteredGroup,
+): Record<string, string> {
+  const providerName = group.containerConfig?.env?.AGENT_PROVIDER;
+  if (!providerName) return {};
+  const providerConfig = getProviderContainerConfig(providerName);
+  if (!providerConfig) return {};
+  const sessionDir = path.join(DATA_DIR, 'sessions', group.folder);
+  const contribution = providerConfig({
+    sessionDir,
+    agentGroupId: group.folder,
+    hostEnv: process.env,
+  });
+  return contribution.env ?? {};
 }
 
 function buildContainerArgs(
@@ -395,11 +410,15 @@ export async function runContainerAgent(
   const mounts = buildVolumeMounts(group, input.isMain);
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
   const containerName = `nanoclaw-${safeName}-${Date.now()}`;
+  // Per-group env passthrough is merged with provider-registered env. The
+  // group config wins on conflicts (last-write into the object), which lets
+  // groups override e.g. CODEX_MODEL even when the provider passes through
+  // a host env default.
   const containerArgs = buildContainerArgs(
     mounts,
     containerName,
     input.isMain,
-    group.containerConfig?.env ?? {},
+    { ...resolveProviderEnvContribution(group), ...(group.containerConfig?.env ?? {}) },
   );
 
   logger.debug(
