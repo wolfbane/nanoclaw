@@ -65,6 +65,46 @@ interface VolumeMount {
   readonly: boolean;
 }
 
+// Names containing any of these substrings have their values redacted when
+// logging container args. Provider env passthrough (e.g. OPENAI_API_KEY) is
+// the main reason this exists — pre-passthrough we never injected secrets
+// here, since the credential proxy handles Anthropic auth.
+const SENSITIVE_ENV_PATTERNS = [
+  /KEY/i,
+  /TOKEN/i,
+  /SECRET/i,
+  /PASSWORD/i,
+  /PASSWD/i,
+  /CREDENTIAL/i,
+];
+
+/**
+ * Returns container args with sensitive env values redacted. Walks the args
+ * list looking for `-e KEY=VALUE` pairs and masks the value when KEY matches
+ * any SENSITIVE_ENV_PATTERNS entry. Used at log sites only — the live spawn
+ * still receives the original args array.
+ */
+export function redactContainerArgs(args: readonly string[]): string[] {
+  const redacted: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '-e' && i + 1 < args.length) {
+      const next = args[i + 1];
+      const eq = next.indexOf('=');
+      if (eq > 0) {
+        const key = next.slice(0, eq);
+        if (SENSITIVE_ENV_PATTERNS.some((re) => re.test(key))) {
+          redacted.push(a, `${key}=[REDACTED]`);
+          i++;
+          continue;
+        }
+      }
+    }
+    redacted.push(a);
+  }
+  return redacted;
+}
+
 function collectTsStats(dir: string): { count: number; maxMtimeMs: number } {
   let count = 0;
   let maxMtimeMs = 0;
@@ -85,11 +125,17 @@ function collectTsStats(dir: string): { count: number; maxMtimeMs: number } {
   return { count, maxMtimeMs };
 }
 
+interface VolumeMountsResult {
+  mounts: VolumeMount[];
+  providerEnv: Record<string, string>;
+}
+
 function buildVolumeMounts(
   group: RegisteredGroup,
   isMain: boolean,
-): VolumeMount[] {
+): VolumeMountsResult {
   const mounts: VolumeMount[] = [];
+  let providerEnv: Record<string, string> = {};
   const projectRoot = process.cwd();
   const groupDir = resolveGroupFolderPath(group.folder);
 
@@ -266,6 +312,9 @@ function buildVolumeMounts(
   // that needs host-side setup registers a callback via
   // src/providers/provider-container-registry.ts; we look up the active
   // provider here and merge its contribution into the spawn args.
+  //
+  // Resolved once per spawn — the callback creates per-session dirs / copies
+  // auth files and we don't want to do that twice (Copilot review on PR #3).
   const providerName = group.containerConfig?.env?.AGENT_PROVIDER;
   if (providerName) {
     const providerConfig = getProviderContainerConfig(providerName);
@@ -277,31 +326,11 @@ function buildVolumeMounts(
         hostEnv: process.env,
       });
       if (contribution.mounts) mounts.push(...contribution.mounts);
+      if (contribution.env) providerEnv = contribution.env;
     }
   }
 
-  return mounts;
-}
-
-/**
- * Returns the env-var contribution from the active provider's registered host
- * config, if any. Kept separate from buildVolumeMounts so the spawn args
- * builder can merge it into its env array in one place.
- */
-function resolveProviderEnvContribution(
-  group: RegisteredGroup,
-): Record<string, string> {
-  const providerName = group.containerConfig?.env?.AGENT_PROVIDER;
-  if (!providerName) return {};
-  const providerConfig = getProviderContainerConfig(providerName);
-  if (!providerConfig) return {};
-  const sessionDir = path.join(DATA_DIR, 'sessions', group.folder);
-  const contribution = providerConfig({
-    sessionDir,
-    agentGroupId: group.folder,
-    hostEnv: process.env,
-  });
-  return contribution.env ?? {};
+  return { mounts, providerEnv };
 }
 
 function buildContainerArgs(
@@ -407,7 +436,7 @@ export async function runContainerAgent(
   const groupDir = resolveGroupFolderPath(group.folder);
   fs.mkdirSync(groupDir, { recursive: true });
 
-  const mounts = buildVolumeMounts(group, input.isMain);
+  const { mounts, providerEnv } = buildVolumeMounts(group, input.isMain);
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
   const containerName = `nanoclaw-${safeName}-${Date.now()}`;
   // Per-group env passthrough is merged with provider-registered env. The
@@ -418,7 +447,7 @@ export async function runContainerAgent(
     mounts,
     containerName,
     input.isMain,
-    { ...resolveProviderEnvContribution(group), ...(group.containerConfig?.env ?? {}) },
+    { ...providerEnv, ...(group.containerConfig?.env ?? {}) },
   );
 
   logger.debug(
@@ -429,7 +458,7 @@ export async function runContainerAgent(
         (m) =>
           `${m.hostPath} -> ${m.containerPath}${m.readonly ? ' (ro)' : ''}`,
       ),
-      containerArgs: containerArgs.join(' '),
+      containerArgs: redactContainerArgs(containerArgs).join(' '),
     },
     'Container mount configuration',
   );
@@ -669,7 +698,7 @@ export async function runContainerAgent(
         }
         logLines.push(
           `=== Container Args ===`,
-          containerArgs.join(' '),
+          redactContainerArgs(containerArgs).join(' '),
           ``,
           `=== Mounts ===`,
           mounts
