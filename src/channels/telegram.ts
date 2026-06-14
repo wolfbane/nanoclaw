@@ -3,6 +3,7 @@ import https from 'https';
 import path from 'path';
 
 import { Api, Bot } from 'grammy';
+import telegramify from 'telegramify-markdown';
 
 import { ASSISTANT_NAME, TRIGGER_PATTERN } from '../config.js';
 import { logOutboundMessage } from '../db.js';
@@ -28,13 +29,76 @@ export interface TelegramChannelOpts {
 
 interface TelegramSendResult {
   messageId: number;
-  parseMode: 'markdown' | 'plain';
+  parseMode: 'markdownv2' | 'plain';
+}
+
+// Telegram rejects messages over 4096 characters.
+const TELEGRAM_MAX_LENGTH = 4096;
+// Below this, MarkdownV2 escaping (worst case ~2x) can't push a chunk over the
+// limit, so we skip the conversion-size check entirely on the hot path.
+const SPLIT_FAST_PATH = 2000;
+// Last-resort hard split for a single line that's too long even on its own.
+const HARD_SPLIT_LIMIT = 3500;
+
+/**
+ * Convert Claude's CommonMark output into Telegram MarkdownV2.
+ *
+ * Claude emits standard Markdown (`**bold**`, `_italic_`, `file_name`, lists,
+ * `[links](url)`). Telegram's legacy `Markdown` parse mode is strict and rejects
+ * most of it ("can't find end of the entity"), so we previously dumped those
+ * messages as unformatted plain text. telegramify-markdown maps CommonMark to
+ * MarkdownV2 and escapes every special char outside entities, so the output
+ * always parses. The trailing newline telegramify appends is stripped.
+ */
+function toTelegramMarkdownV2(text: string): string {
+  return telegramify(text, 'escape').replace(/\n+$/, '');
 }
 
 /**
- * Send a message with Telegram Markdown parse mode, falling back to plain text.
- * Claude's output naturally matches Telegram's Markdown v1 format:
- *   *bold*, _italic_, `code`, ```code blocks```, [links](url)
+ * Split source text into pieces whose *converted* MarkdownV2 length stays within
+ * Telegram's 4096-char limit. Splits only on newlines so Markdown entities are
+ * never cut mid-delimiter; a single line too long even alone is hard-split.
+ */
+export function splitForTelegram(text: string): string[] {
+  if (text.length <= SPLIT_FAST_PATH) return [text];
+
+  const fits = (s: string) =>
+    toTelegramMarkdownV2(s).length <= TELEGRAM_MAX_LENGTH;
+  if (fits(text)) return [text];
+
+  const chunks: string[] = [];
+  let current = '';
+  const flush = () => {
+    if (current) {
+      chunks.push(current);
+      current = '';
+    }
+  };
+  for (const line of text.split('\n')) {
+    const candidate = current ? `${current}\n${line}` : line;
+    if (fits(candidate)) {
+      current = candidate;
+      continue;
+    }
+    flush();
+    if (fits(line)) {
+      current = line;
+      continue;
+    }
+    // Single line too long even on its own — hard-split by characters.
+    for (let i = 0; i < line.length; i += HARD_SPLIT_LIMIT) {
+      chunks.push(line.slice(i, i + HARD_SPLIT_LIMIT));
+    }
+  }
+  flush();
+  return chunks;
+}
+
+/**
+ * Send a message as Telegram MarkdownV2, falling back to plain text if Telegram
+ * still rejects the converted output. The fallback sends the *original* text
+ * (no escape backslashes) so a parse failure degrades to readable plain text —
+ * never worse than the pre-conversion behavior.
  */
 async function sendTelegramMessage(
   api: { sendMessage: Api['sendMessage'] },
@@ -43,20 +107,20 @@ async function sendTelegramMessage(
   options: { message_thread_id?: number } = {},
 ): Promise<TelegramSendResult> {
   try {
-    const sent = await api.sendMessage(chatId, text, {
+    const sent = await api.sendMessage(chatId, toTelegramMarkdownV2(text), {
       ...options,
-      parse_mode: 'Markdown',
+      parse_mode: 'MarkdownV2',
     });
-    return { messageId: sent.message_id, parseMode: 'markdown' };
+    return { messageId: sent.message_id, parseMode: 'markdownv2' };
   } catch (err) {
-    // Fallback: send as plain text if Markdown parsing fails
+    // Fallback: send the original text as plain if MarkdownV2 parsing fails.
     logger.warn(
       {
         chatId,
         threadId: options.message_thread_id,
         err: err instanceof Error ? err.message : String(err),
       },
-      'Telegram Markdown send failed, falling back to plain text',
+      'Telegram MarkdownV2 send failed, falling back to plain text',
     );
     const sent = await api.sendMessage(chatId, text, options);
     return { messageId: sent.message_id, parseMode: 'plain' };
@@ -399,29 +463,18 @@ export class TelegramChannel implements Channel {
         ? { message_thread_id: parseInt(threadId, 10) }
         : {};
 
-      // Telegram has a 4096 character limit per message — split if needed
-      const MAX_LENGTH = 4096;
+      // Telegram caps messages at 4096 chars; MarkdownV2 conversion expands
+      // length, so split the source on line boundaries (with headroom) first.
       const results: TelegramSendResult[] = [];
-      if (text.length <= MAX_LENGTH) {
+      for (const chunk of splitForTelegram(text)) {
         results.push(
-          await sendTelegramMessage(this.bot.api, numericId, text, options),
+          await sendTelegramMessage(this.bot.api, numericId, chunk, options),
         );
-      } else {
-        for (let i = 0; i < text.length; i += MAX_LENGTH) {
-          results.push(
-            await sendTelegramMessage(
-              this.bot.api,
-              numericId,
-              text.slice(i, i + MAX_LENGTH),
-              options,
-            ),
-          );
-        }
       }
-      const parseMode: 'markdown' | 'plain' | 'mixed' = results.every(
-        (r) => r.parseMode === 'markdown',
+      const parseMode: 'markdownv2' | 'plain' | 'mixed' = results.every(
+        (r) => r.parseMode === 'markdownv2',
       )
-        ? 'markdown'
+        ? 'markdownv2'
         : results.every((r) => r.parseMode === 'plain')
           ? 'plain'
           : 'mixed';

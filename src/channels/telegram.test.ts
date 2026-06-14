@@ -923,7 +923,7 @@ describe('TelegramChannel', () => {
   // --- sendMessage ---
 
   describe('sendMessage', () => {
-    it('sends message via bot API', async () => {
+    it('sends message via bot API as MarkdownV2', async () => {
       const opts = createTestOpts();
       const channel = new TelegramChannel('test-token', opts);
       await channel.connect();
@@ -933,7 +933,7 @@ describe('TelegramChannel', () => {
       expect(currentBot().api.sendMessage).toHaveBeenCalledWith(
         '100200300',
         'Hello',
-        { parse_mode: 'Markdown' },
+        { parse_mode: 'MarkdownV2' },
       );
     });
 
@@ -947,11 +947,41 @@ describe('TelegramChannel', () => {
       expect(currentBot().api.sendMessage).toHaveBeenCalledWith(
         '-1001234567890',
         'Group message',
-        { parse_mode: 'Markdown' },
+        { parse_mode: 'MarkdownV2' },
       );
     });
 
-    it('splits messages exceeding 4096 characters', async () => {
+    it('converts CommonMark bold (**) to MarkdownV2 (*)', async () => {
+      const opts = createTestOpts();
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      await channel.sendMessage('tg:100200300', 'Here is **bold** text');
+
+      expect(currentBot().api.sendMessage).toHaveBeenCalledWith(
+        '100200300',
+        'Here is *bold* text',
+        { parse_mode: 'MarkdownV2' },
+      );
+    });
+
+    it('escapes special chars that broke legacy Markdown', async () => {
+      const opts = createTestOpts();
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      // Underscores in identifiers + a trailing period were a classic
+      // "can't find end of the entity" failure under legacy Markdown.
+      await channel.sendMessage('tg:100200300', 'See file_name.ts now');
+
+      expect(currentBot().api.sendMessage).toHaveBeenCalledWith(
+        '100200300',
+        'See file\\_name\\.ts now',
+        { parse_mode: 'MarkdownV2' },
+      );
+    });
+
+    it('splits messages whose converted form exceeds the limit', async () => {
       const opts = createTestOpts();
       const channel = new TelegramChannel('test-token', opts);
       await channel.connect();
@@ -963,26 +993,46 @@ describe('TelegramChannel', () => {
       expect(currentBot().api.sendMessage).toHaveBeenNthCalledWith(
         1,
         '100200300',
-        'x'.repeat(4096),
-        { parse_mode: 'Markdown' },
+        'x'.repeat(3500),
+        { parse_mode: 'MarkdownV2' },
       );
       expect(currentBot().api.sendMessage).toHaveBeenNthCalledWith(
         2,
         '100200300',
-        'x'.repeat(904),
-        { parse_mode: 'Markdown' },
+        'x'.repeat(1500),
+        { parse_mode: 'MarkdownV2' },
       );
     });
 
-    it('sends exactly one message at 4096 characters', async () => {
+    it('sends a within-limit message as a single message', async () => {
       const opts = createTestOpts();
       const channel = new TelegramChannel('test-token', opts);
       await channel.connect();
 
-      const exactText = 'y'.repeat(4096);
-      await channel.sendMessage('tg:100200300', exactText);
+      await channel.sendMessage('tg:100200300', 'y'.repeat(2000));
 
       expect(currentBot().api.sendMessage).toHaveBeenCalledTimes(1);
+    });
+
+    it('falls back to plain original text when MarkdownV2 send fails', async () => {
+      const opts = createTestOpts();
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      // First (MarkdownV2) attempt rejected; fallback retries as plain text.
+      currentBot().api.sendMessage.mockRejectedValueOnce(
+        new Error('Bad Request: can’t parse entities'),
+      );
+
+      await channel.sendMessage('tg:100200300', 'tricky _text');
+
+      // Fallback sends the ORIGINAL text (no escaping) and no parse_mode.
+      expect(currentBot().api.sendMessage).toHaveBeenNthCalledWith(
+        2,
+        '100200300',
+        'tricky _text',
+        {},
+      );
     });
 
     it('handles send failure gracefully', async () => {
@@ -990,7 +1040,8 @@ describe('TelegramChannel', () => {
       const channel = new TelegramChannel('test-token', opts);
       await channel.connect();
 
-      currentBot().api.sendMessage.mockRejectedValueOnce(
+      // Both the MarkdownV2 attempt and the plain fallback fail.
+      currentBot().api.sendMessage.mockRejectedValue(
         new Error('Network error'),
       );
 
