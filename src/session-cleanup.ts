@@ -18,8 +18,9 @@ function runCleanup(): void {
 }
 
 export function startSessionCleanup(): void {
-  // Run once at startup (delayed 30s to not compete with init)
-  setTimeout(runCleanup, 30_000);
+  // Run once at startup (delayed 30s to not compete with init).
+  // .unref() so neither timer keeps the event loop alive at shutdown.
+  setTimeout(runCleanup, 30_000).unref();
   // Then every 24 hours
-  setInterval(runCleanup, CLEANUP_INTERVAL);
+  setInterval(runCleanup, CLEANUP_INTERVAL).unref();
 }

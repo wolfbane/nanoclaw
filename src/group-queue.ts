@@ -25,6 +25,7 @@ interface GroupState {
   containerName: string | null;
   groupFolder: string | null;
   retryCount: number;
+  retryTimer: ReturnType<typeof setTimeout> | null;
 }
 
 export class GroupQueue {
@@ -49,6 +50,7 @@ export class GroupQueue {
         containerName: null,
         groupFolder: null,
         retryCount: 0,
+        retryTimer: null,
       };
       this.groups.set(groupJid, state);
     }
@@ -276,11 +278,16 @@ export class GroupQueue {
       { groupJid, retryCount: state.retryCount, delayMs },
       'Scheduling retry with backoff',
     );
-    setTimeout(() => {
+    // One pending retry per group: clear any prior timer so they can't
+    // accumulate. unref so it never holds the event loop open at shutdown.
+    if (state.retryTimer) clearTimeout(state.retryTimer);
+    state.retryTimer = setTimeout(() => {
+      state.retryTimer = null;
       if (!this.shuttingDown) {
         this.enqueueMessageCheck(groupJid);
       }
     }, delayMs);
+    state.retryTimer.unref();
   }
 
   private drainGroup(groupJid: string): void {
@@ -352,6 +359,10 @@ export class GroupQueue {
     // This prevents WhatsApp reconnection restarts from killing working agents.
     const activeContainers: string[] = [];
     for (const [_jid, state] of this.groups) {
+      if (state.retryTimer) {
+        clearTimeout(state.retryTimer);
+        state.retryTimer = null;
+      }
       if (state.process && !state.process.killed && state.containerName) {
         activeContainers.push(state.containerName);
       }
