@@ -44,7 +44,7 @@ ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
 # Claude Code is pinned because the Agent SDK's IPC protocol must match the
 # Claude Code version — version drift here surfaces as a confusing spawn-time
 # error. Bump CLAUDE_CODE_VERSION and the agent-runner SDK dep together.
-ARG CLAUDE_CODE_VERSION=2.1.136
+ARG CLAUDE_CODE_VERSION=2.1.177
 RUN npm install -g agent-browser "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
 
 # Install Codex CLI for the `codex` agent provider.
