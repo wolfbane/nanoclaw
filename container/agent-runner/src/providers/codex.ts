@@ -266,29 +266,28 @@ function pickNum(
 }
 
 /**
- * Extract token usage from a codex `turn/completed` payload. Codex's exact
- * field names have drifted across versions, so we try the common spellings and
- * keep the raw object so the host can recover anything we miss.
+ * Extract token usage from a codex `thread/tokenUsage/updated` payload.
+ *
+ * Shape (codex 0.139): `params.tokenUsage.{last,total}` =
+ *   { inputTokens, cachedInputTokens, outputTokens, reasoningOutputTokens,
+ *     totalTokens }
+ * `inputTokens` is inclusive of `cachedInputTokens`; `totalTokens =
+ * inputTokens + outputTokens`. We prefer `.last` (this turn) and fall back to
+ * `.total` (cumulative). Field-name fallbacks guard future drift; `raw` keeps
+ * the object so the host can recover anything we don't model.
  */
 function extractCodexUsage(
   params: Record<string, unknown>,
 ): ProviderUsage | undefined {
-  const u = (params.usage ?? params.tokenUsage ?? params.token_usage) as
-    | Record<string, unknown>
+  const tu = params.tokenUsage as
+    | { last?: Record<string, unknown>; total?: Record<string, unknown> }
     | undefined;
+  const u = tu?.last ?? tu?.total;
   if (!u || typeof u !== 'object') return undefined;
   return {
-    inputTokens: pickNum(u, ['input_tokens', 'inputTokens', 'prompt_tokens']),
-    outputTokens: pickNum(u, [
-      'output_tokens',
-      'outputTokens',
-      'completion_tokens',
-    ]),
-    cachedInputTokens: pickNum(u, [
-      'cached_input_tokens',
-      'cachedInputTokens',
-      'cache_read_input_tokens',
-    ]),
+    inputTokens: pickNum(u, ['inputTokens', 'input_tokens']),
+    outputTokens: pickNum(u, ['outputTokens', 'output_tokens']),
+    cachedInputTokens: pickNum(u, ['cachedInputTokens', 'cached_input_tokens']),
     raw: u,
   };
 }
@@ -349,8 +348,12 @@ async function* runOneTurn(
         if (item?.type === 'agentMessage' && item.text) resultText = item.text;
         break;
       }
+      case 'thread/tokenUsage/updated':
+        // Codex reports tokens here, not in turn/completed. Keep the latest
+        // (it fires per turn; `?? turnUsage` guards a malformed late event).
+        turnUsage = extractCodexUsage(params) ?? turnUsage;
+        break;
       case 'turn/completed':
-        turnUsage = extractCodexUsage(params);
         turnDone = true;
         break;
       case 'turn/failed': {
