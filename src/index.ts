@@ -17,6 +17,10 @@ import {
 import { startCaldavService } from './caldav-service.js';
 import { startCarddavService } from './carddav-service.js';
 import { startCredentialProxy } from './credential-proxy.js';
+import {
+  acquireSingletonLock,
+  releaseSingletonLock,
+} from './singleton-lock.js';
 import './channels/index.js';
 import {
   getChannelFactory,
@@ -324,6 +328,9 @@ function ensureContainerSystemRunning(): void {
 }
 
 async function main(): Promise<void> {
+  // Refuse to start a second instance for this data dir (prevents the
+  // split-brain that strands containers / double-runs tasks).
+  acquireSingletonLock();
   ensureContainerSystemRunning();
   initDatabase();
   logger.info('Database initialized');
@@ -376,6 +383,7 @@ async function main(): Promise<void> {
     carddavServer?.close();
     await queue.shutdown(10000);
     for (const ch of channels) await ch.disconnect();
+    releaseSingletonLock();
     process.exit(0);
   };
   process.on('SIGTERM', () => shutdown('SIGTERM'));
