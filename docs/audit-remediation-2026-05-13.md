@@ -227,3 +227,23 @@ Out-of-cycle work driven by observed friction, not the original audit. Logged he
 - [ ] **Cents-data interpretation cost trend.** NanoClaw now interprets cents data on demand, billed to the `clawbackup` key (via the proxy). Watch `usage-summary.ts` over the next 1–2 weeks; if `clawbackup` daily climbs meaningfully above the ~$2.30 baseline, investigate which sessions are doing the heavy cents work and whether Haiku is sufficient for parts of it.
 - [ ] **`.env.bak.2026-04-21`, `.env.bak.pre-multibot-revert`.** Untracked files at repo root from before this session. Either delete or move out of the working tree.
 - [ ] **Briefs: thread-section drift.** New brief prompts forbid dates/times/locations in *Threads*. If the failure mode re-emerges in a new shape, escalate to two-task split (Option D from the analysis): one task formats calendar from script data, a separate task with no calendar tools at all generates the threads roundup.
+
+---
+
+## 2026-06-14 — Bucket 4 re-review (against current code)
+
+All 8 Bucket 4 items re-verified against the code (the audit was a month stale).
+Most were already resolved by intervening work; two were fixed this day.
+
+| # | Item | Verdict |
+|---|------|---------|
+| 1 🔴 | Cursor advance race | **Resolved** — cursor split into global "seen" (`setLastTimestamp`) + per-group "processed" (`getCursor`/`setCursor`, advanced only after pipe/handle) + `recoverPendingMessages()`. |
+| 2 🔴 | session-cleanup `execFile` throw | **Non-issue** — `err` path handled, `stdout` is a utf8 string, `runCleanup` isn't async. |
+| 3 🟡 | DAV retry-timer leak | **Resolved** — `retryTimer.unref()` + `stop()`/`clearInterval` on server close + `inFlight` guard. |
+| 4 🟡 | session-cleanup `setInterval` no `unref` | **Cosmetic, left as-is** — present, but shutdown uses `process.exit(0)`. |
+| 5 🟡 | IPC rename atomicity | **Fixed (commit e1bdc92)** — `quarantineFile()` with delete-on-failure fallback at both error paths. |
+| 6 🟡 | `getCursor` stale state | **Mitigated** — concurrent-restart trigger removed by the new singleton lock (`src/singleton-lock.ts`); `getCursor` also recovers from the last bot reply. |
+| 7 🟡 | group-queue retry-timer accumulation | **Cosmetic, left as-is** — handle not cleared on dispose, but bounded by `MAX_RETRIES` + `shuttingDown` guard + `process.exit`. |
+| 8 🟡 | `containerConfig` schema validation | **Fixed (commit e1bdc92)** — `safeParseContainerConfig()` + 5 unit tests. |
+
+Net: Bucket 4 effectively closed. Only #4 and #7 remain — cosmetic timer-`unref` hygiene, deferred as low value.
