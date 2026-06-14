@@ -10,6 +10,33 @@ import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
 import { RegisteredGroup, SendMessageFn } from './types.js';
 
+/**
+ * Move a failed IPC file into the errors dir for inspection. If the move itself
+ * fails (cross-device, perms), delete the source instead — otherwise a bad file
+ * re-fails every poll cycle and, since the rename was previously unguarded,
+ * could throw out of the watch loop entirely.
+ */
+function quarantineFile(
+  filePath: string,
+  errorDir: string,
+  destName: string,
+): void {
+  try {
+    fs.mkdirSync(errorDir, { recursive: true });
+    fs.renameSync(filePath, path.join(errorDir, destName));
+  } catch (err) {
+    logger.error(
+      { filePath, err },
+      'Failed to quarantine IPC file — deleting source',
+    );
+    try {
+      fs.unlinkSync(filePath);
+    } catch {
+      /* source already gone */
+    }
+  }
+}
+
 export interface IpcDeps {
   sendMessage: SendMessageFn;
   registeredGroups: () => Record<string, RegisteredGroup>;
@@ -156,9 +183,11 @@ export async function processIpcMessageFile(
     } catch {
       /* already logged above */
     }
-    const errorDir = path.join(ipcBaseDir, 'errors');
-    fs.mkdirSync(errorDir, { recursive: true });
-    fs.renameSync(filePath, path.join(errorDir, `${sourceGroup}-${file}`));
+    quarantineFile(
+      filePath,
+      path.join(ipcBaseDir, 'errors'),
+      `${sourceGroup}-${file}`,
+    );
   }
 }
 
@@ -239,11 +268,10 @@ export function startIpcWatcher(deps: IpcDeps): void {
           fs.unlinkSync(filePath);
         } catch (err) {
           logger.error({ file, sourceGroup, err }, 'Error processing IPC task');
-          const errorDir = path.join(ipcBaseDir, 'errors');
-          fs.mkdirSync(errorDir, { recursive: true });
-          fs.renameSync(
+          quarantineFile(
             filePath,
-            path.join(errorDir, `${sourceGroup}-${file}`),
+            path.join(ipcBaseDir, 'errors'),
+            `${sourceGroup}-${file}`,
           );
         }
       }

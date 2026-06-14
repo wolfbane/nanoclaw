@@ -10,6 +10,7 @@ import {
   getMessagesSince,
   getNewMessages,
   getTaskById,
+  safeParseContainerConfig,
   setRegisteredGroup,
   storeChatMetadata,
   storeMessage,
@@ -19,6 +20,38 @@ import { formatMessages } from './router.js';
 
 beforeEach(() => {
   _initTestDatabase();
+});
+
+describe('safeParseContainerConfig', () => {
+  it('returns undefined for null/empty', () => {
+    expect(safeParseContainerConfig(null, 'g')).toBeUndefined();
+    expect(safeParseContainerConfig('', 'g')).toBeUndefined();
+  });
+
+  it('parses a valid config', () => {
+    const cfg = safeParseContainerConfig(
+      '{"env":{"AGENT_PROVIDER":"codex"},"additionalMounts":[]}',
+      'g',
+    );
+    expect(cfg?.env?.AGENT_PROVIDER).toBe('codex');
+    expect(cfg?.additionalMounts).toEqual([]);
+  });
+
+  it('returns undefined for malformed JSON instead of throwing', () => {
+    expect(safeParseContainerConfig('{not valid', 'g')).toBeUndefined();
+  });
+
+  it('returns undefined for non-object JSON', () => {
+    expect(safeParseContainerConfig('42', 'g')).toBeUndefined();
+    expect(safeParseContainerConfig('[1,2]', 'g')).toBeUndefined();
+  });
+
+  it('rejects wrong-shaped fields', () => {
+    expect(
+      safeParseContainerConfig('{"additionalMounts":"nope"}', 'g'),
+    ).toBeUndefined();
+    expect(safeParseContainerConfig('{"env":[1,2]}', 'g')).toBeUndefined();
+  });
 });
 
 // Helper to store a message using the normalized NewMessage interface

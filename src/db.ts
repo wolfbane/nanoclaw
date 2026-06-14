@@ -6,6 +6,7 @@ import { ASSISTANT_NAME, DATA_DIR, STORE_DIR } from './config.js';
 import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
 import {
+  ContainerConfig,
   NewMessage,
   OutboundSource,
   RegisteredGroup,
@@ -841,13 +842,57 @@ export function getRegisteredGroup(
     folder: row.folder,
     trigger: row.trigger_pattern,
     added_at: row.added_at,
-    containerConfig: row.container_config
-      ? JSON.parse(row.container_config)
-      : undefined,
+    containerConfig: safeParseContainerConfig(row.container_config, row.jid),
     requiresTrigger:
       row.requires_trigger === null ? undefined : row.requires_trigger === 1,
     isMain: row.is_main === 1 ? true : undefined,
   };
+}
+
+/**
+ * Parse a registered group's container_config defensively. Returns undefined
+ * (group runs with no extra mounts/env) rather than throwing if the stored JSON
+ * is malformed or the wrong shape — a bad row (corruption, manual SQL) must not
+ * crash group load. Exported for tests.
+ */
+export function safeParseContainerConfig(
+  raw: string | null,
+  jid: string,
+): ContainerConfig | undefined {
+  if (!raw) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    logger.warn({ jid, err }, 'Malformed container_config JSON — ignoring it');
+    return undefined;
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    logger.warn({ jid }, 'container_config is not an object — ignoring it');
+    return undefined;
+  }
+  const cfg = parsed as Record<string, unknown>;
+  if (
+    cfg.additionalMounts !== undefined &&
+    !Array.isArray(cfg.additionalMounts)
+  ) {
+    logger.warn(
+      { jid },
+      'container_config.additionalMounts is not an array — ignoring config',
+    );
+    return undefined;
+  }
+  if (
+    cfg.env !== undefined &&
+    (typeof cfg.env !== 'object' || cfg.env === null || Array.isArray(cfg.env))
+  ) {
+    logger.warn(
+      { jid },
+      'container_config.env is not an object — ignoring config',
+    );
+    return undefined;
+  }
+  return cfg as ContainerConfig;
 }
 
 export function setRegisteredGroup(jid: string, group: RegisteredGroup): void {
@@ -894,9 +939,7 @@ export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
       folder: row.folder,
       trigger: row.trigger_pattern,
       added_at: row.added_at,
-      containerConfig: row.container_config
-        ? JSON.parse(row.container_config)
-        : undefined,
+      containerConfig: safeParseContainerConfig(row.container_config, row.jid),
       requiresTrigger:
         row.requires_trigger === null ? undefined : row.requires_trigger === 1,
       isMain: row.is_main === 1 ? true : undefined,
