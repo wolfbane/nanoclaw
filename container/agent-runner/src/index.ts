@@ -596,7 +596,12 @@ async function main(): Promise<void> {
   // No real secrets exist in the container environment.
   const sdkEnv: Record<string, string | undefined> = {
     ...process.env,
-    CLAUDE_CODE_AUTO_COMPACT_WINDOW: '165000',
+    // Auto-compact at 165k tokens by default — cost control on the 1M-context
+    // sonnet pin (caps per-turn input growth). Operator-overridable via host
+    // env or a group's container_config.env; previously the literal sat after
+    // the ...process.env spread and clobbered any override.
+    CLAUDE_CODE_AUTO_COMPACT_WINDOW:
+      process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW ?? '165000',
   };
 
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
