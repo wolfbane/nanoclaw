@@ -193,6 +193,22 @@ function createSchema(database: Database.Database): void {
   } catch {
     /* columns already exist */
   }
+
+  // Add provider + shadow-cost columns to api_usage (migration for existing DBs).
+  // `provider` distinguishes proxy-tracked Claude rows ('anthropic') from codex
+  // rows. Codex runs on a flat ChatGPT subscription (cost_usd = 0), so
+  // `shadow_cost_usd` records what the same token counts would have cost on
+  // Claude — the apples-to-apples number for the A/B test.
+  try {
+    database.exec(
+      `ALTER TABLE api_usage ADD COLUMN provider TEXT DEFAULT 'anthropic'`,
+    );
+    database.exec(
+      `ALTER TABLE api_usage ADD COLUMN shadow_cost_usd REAL DEFAULT 0`,
+    );
+  } catch {
+    /* columns already exist */
+  }
 }
 
 export function initDatabase(): void {
@@ -664,6 +680,10 @@ export interface ApiUsageRow {
   duration_ms: number;
   is_streaming: boolean;
   cost_usd: number;
+  /** 'anthropic' (proxy-tracked Claude) or 'codex'. Defaults to 'anthropic'. */
+  provider?: string;
+  /** For codex (flat subscription): Claude-equivalent cost of the same tokens. */
+  shadow_cost_usd?: number;
 }
 
 export function recordApiUsage(row: ApiUsageRow): void {
@@ -672,8 +692,8 @@ export function recordApiUsage(row: ApiUsageRow): void {
     INSERT INTO api_usage (
       ts, path, method, status, source_ip, model, request_id,
       input_tokens, cache_creation_input_tokens, cache_read_input_tokens,
-      output_tokens, duration_ms, is_streaming, cost_usd
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      output_tokens, duration_ms, is_streaming, cost_usd, provider, shadow_cost_usd
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `,
   ).run(
     row.ts,
@@ -690,7 +710,57 @@ export function recordApiUsage(row: ApiUsageRow): void {
     row.duration_ms,
     row.is_streaming ? 1 : 0,
     row.cost_usd,
+    row.provider ?? 'anthropic',
+    row.shadow_cost_usd ?? 0,
   );
+}
+
+// Sonnet-4.6 list price (USD per million tokens) — the basis for codex shadow
+// cost. Keep in sync with the PRICING map in src/credential-proxy.ts.
+const SONNET_SHADOW_PRICE = { input: 3, cacheRead: 0.3, output: 15 };
+
+/**
+ * Record a codex turn's token usage. Codex bills via a flat ChatGPT
+ * subscription, so cost_usd is 0; shadow_cost_usd prices the same tokens at
+ * Claude Sonnet rates ("what this would have cost on Claude"). Best-effort:
+ * called from the container output path, never throws into the hot loop.
+ */
+export function recordCodexUsage(args: {
+  model: string | null;
+  groupName: string;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  durationMs: number;
+}): void {
+  try {
+    const billedInput = Math.max(0, args.inputTokens - args.cachedInputTokens);
+    const shadow =
+      (billedInput * SONNET_SHADOW_PRICE.input +
+        args.cachedInputTokens * SONNET_SHADOW_PRICE.cacheRead +
+        args.outputTokens * SONNET_SHADOW_PRICE.output) /
+      1_000_000;
+    recordApiUsage({
+      ts: new Date().toISOString(),
+      path: '/codex/turn',
+      method: 'CODEX',
+      status: 200,
+      source_ip: args.groupName,
+      model: args.model,
+      request_id: null,
+      input_tokens: args.inputTokens,
+      cache_creation_input_tokens: 0,
+      cache_read_input_tokens: args.cachedInputTokens,
+      output_tokens: args.outputTokens,
+      duration_ms: args.durationMs,
+      is_streaming: true,
+      cost_usd: 0,
+      provider: 'codex',
+      shadow_cost_usd: shadow,
+    });
+  } catch (err) {
+    logger.warn({ err }, 'Failed to record codex usage');
+  }
 }
 
 // --- Router state accessors ---

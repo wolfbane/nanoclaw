@@ -35,6 +35,7 @@ import { validateAdditionalMounts } from './mount-security.js';
 // lookup of getProviderContainerConfig() below.
 import './providers/index.js';
 import { getProviderContainerConfig } from './providers/provider-container-registry.js';
+import { recordCodexUsage } from './db.js';
 import { RegisteredGroup } from './types.js';
 
 // Sentinel markers for robust output parsing (must match agent-runner)
@@ -52,11 +53,20 @@ export interface ContainerInput {
   script?: string;
 }
 
+/** Per-turn token usage emitted by providers that surface it (e.g. codex). */
+export interface ContainerUsage {
+  inputTokens?: number;
+  outputTokens?: number;
+  cachedInputTokens?: number;
+  raw?: unknown;
+}
+
 export interface ContainerOutput {
   status: 'success' | 'error';
   result: string | null;
   newSessionId?: string;
   error?: string;
+  usage?: ContainerUsage;
 }
 
 interface VolumeMount {
@@ -567,6 +577,21 @@ export async function runContainerAgent(
             const parsed: ContainerOutput = JSON.parse(jsonStr);
             if (parsed.newSessionId) {
               newSessionId = parsed.newSessionId;
+            }
+            // Codex bypasses the credential proxy that feeds api_usage for
+            // Claude, so record its turn usage here (best-effort).
+            if (
+              parsed.usage &&
+              group.containerConfig?.env?.AGENT_PROVIDER === 'codex'
+            ) {
+              recordCodexUsage({
+                model: group.containerConfig?.env?.CODEX_MODEL ?? null,
+                groupName: group.name,
+                inputTokens: parsed.usage.inputTokens ?? 0,
+                cachedInputTokens: parsed.usage.cachedInputTokens ?? 0,
+                outputTokens: parsed.usage.outputTokens ?? 0,
+                durationMs: Date.now() - startTime,
+              });
             }
             hadStreamingOutput = true;
             // Activity detected — reset the hard timeout

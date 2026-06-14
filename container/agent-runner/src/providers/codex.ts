@@ -17,7 +17,14 @@ import fs from 'fs';
 import path from 'path';
 
 import { registerProvider } from './provider-registry.js';
-import type { AgentProvider, AgentQuery, ProviderEvent, ProviderOptions, QueryInput } from './types.js';
+import type {
+  AgentProvider,
+  AgentQuery,
+  ProviderEvent,
+  ProviderOptions,
+  ProviderUsage,
+  QueryInput,
+} from './types.js';
 import {
   type AppServer,
   type JsonRpcNotification,
@@ -51,7 +58,11 @@ const TURN_TIMEOUT_MS = 5 * 60 * 1000;
  * dropped (replaced with empty text) rather than left as raw `@path` lines,
  * which would confuse the model.
  */
-export function resolveClaudeImports(content: string, baseDir: string, seen: Set<string> = new Set()): string {
+export function resolveClaudeImports(
+  content: string,
+  baseDir: string,
+  seen: Set<string> = new Set(),
+): string {
   return content.replace(/^@(\S+)\s*$/gm, (_match, importPath: string) => {
     try {
       const resolved = path.resolve(baseDir, importPath);
@@ -83,18 +94,26 @@ function readAgentAndGlobalClaudeMd(): string | undefined {
   const parts: string[] = [];
 
   if (fs.existsSync(groupPath)) {
-    parts.push(resolveClaudeImports(fs.readFileSync(groupPath, 'utf-8'), groupDir));
+    parts.push(
+      resolveClaudeImports(fs.readFileSync(groupPath, 'utf-8'), groupDir),
+    );
   }
   if (fs.existsSync(localPath)) {
-    parts.push(resolveClaudeImports(fs.readFileSync(localPath, 'utf-8'), groupDir));
+    parts.push(
+      resolveClaudeImports(fs.readFileSync(localPath, 'utf-8'), groupDir),
+    );
   }
 
   return parts.length > 0 ? parts.join('\n\n---\n\n') : undefined;
 }
 
-function composeBaseInstructions(promptAddendum: string | undefined): string | undefined {
+function composeBaseInstructions(
+  promptAddendum: string | undefined,
+): string | undefined {
   const claudeMd = readAgentAndGlobalClaudeMd();
-  const pieces = [claudeMd, promptAddendum].filter((s): s is string => Boolean(s));
+  const pieces = [claudeMd, promptAddendum].filter((s): s is string =>
+    Boolean(s),
+  );
   return pieces.length > 0 ? pieces.join('\n\n---\n\n') : undefined;
 }
 
@@ -103,7 +122,10 @@ function composeBaseInstructions(promptAddendum: string | undefined): string | u
 export class CodexProvider implements AgentProvider {
   readonly supportsNativeSlashCommands = false;
 
-  private readonly mcpServers: Record<string, { command: string; args: string[]; env: Record<string, string> }>;
+  private readonly mcpServers: Record<
+    string,
+    { command: string; args: string[]; env: Record<string, string> }
+  >;
   private readonly model: string;
 
   constructor(options: ProviderOptions = {}) {
@@ -153,10 +175,16 @@ export class CodexProvider implements AgentProvider {
           sandbox: 'danger-full-access',
           approvalPolicy: 'never',
           personality: 'friendly',
-          baseInstructions: composeBaseInstructions(input.systemContext?.instructions),
+          baseInstructions: composeBaseInstructions(
+            input.systemContext?.instructions,
+          ),
         };
 
-        threadId = await startOrResumeCodexThread(server, threadId, threadParams);
+        threadId = await startOrResumeCodexThread(
+          server,
+          threadId,
+          threadParams,
+        );
 
         while (!aborted) {
           while (pending.length === 0 && !ended && !aborted) {
@@ -225,6 +253,46 @@ export class CodexProvider implements AgentProvider {
 // and because it's a natural seam for future unit tests that drive it with
 // a fake notification stream.
 
+/** Pull the first present numeric field (handles snake/camel naming drift). */
+function pickNum(
+  obj: Record<string, unknown>,
+  keys: string[],
+): number | undefined {
+  for (const k of keys) {
+    const v = obj[k];
+    if (typeof v === 'number' && Number.isFinite(v)) return v;
+  }
+  return undefined;
+}
+
+/**
+ * Extract token usage from a codex `turn/completed` payload. Codex's exact
+ * field names have drifted across versions, so we try the common spellings and
+ * keep the raw object so the host can recover anything we miss.
+ */
+function extractCodexUsage(
+  params: Record<string, unknown>,
+): ProviderUsage | undefined {
+  const u = (params.usage ?? params.tokenUsage ?? params.token_usage) as
+    | Record<string, unknown>
+    | undefined;
+  if (!u || typeof u !== 'object') return undefined;
+  return {
+    inputTokens: pickNum(u, ['input_tokens', 'inputTokens', 'prompt_tokens']),
+    outputTokens: pickNum(u, [
+      'output_tokens',
+      'outputTokens',
+      'completion_tokens',
+    ]),
+    cachedInputTokens: pickNum(u, [
+      'cached_input_tokens',
+      'cachedInputTokens',
+      'cache_read_input_tokens',
+    ]),
+    raw: u,
+  };
+}
+
 async function* runOneTurn(
   server: AppServer,
   threadId: string,
@@ -238,6 +306,7 @@ async function* runOneTurn(
   // for narrowing, but property access keeps the declared type visible.
   const turnState: { error: Error | null } = { error: null };
   let resultText = '';
+  let turnUsage: ProviderUsage | undefined;
   let turnDone = false;
 
   // Buffered event queue so we can `yield` across the async notification
@@ -274,11 +343,14 @@ async function* runOneTurn(
         break;
       }
       case 'item/completed': {
-        const item = params.item as { type?: string; text?: string } | undefined;
+        const item = params.item as
+          | { type?: string; text?: string }
+          | undefined;
         if (item?.type === 'agentMessage' && item.text) resultText = item.text;
         break;
       }
       case 'turn/completed':
+        turnUsage = extractCodexUsage(params);
         turnDone = true;
         break;
       case 'turn/failed': {
@@ -289,7 +361,8 @@ async function* runOneTurn(
       }
       case 'thread/status/changed': {
         const status = params.status as string | undefined;
-        if (status) buffer.push({ type: 'progress', message: `status: ${status}` });
+        if (status)
+          buffer.push({ type: 'progress', message: `status: ${status}` });
         break;
       }
       default:
@@ -334,11 +407,15 @@ async function* runOneTurn(
     while (buffer.length > 0) yield buffer.shift()!;
 
     if (turnState.error) {
-      yield { type: 'error', message: turnState.error.message, retryable: false };
+      yield {
+        type: 'error',
+        message: turnState.error.message,
+        retryable: false,
+      };
       return;
     }
 
-    yield { type: 'result', text: resultText || null };
+    yield { type: 'result', text: resultText || null, usage: turnUsage };
   } finally {
     clearTimeout(timer);
     const idx = server.notificationHandlers.indexOf(handler);

@@ -79,10 +79,29 @@ export interface AgentQuery {
   abort(): void;
 }
 
+/**
+ * Token usage for one turn, reported by providers that surface it (e.g. Codex's
+ * `turn/completed`). Used by the host to record per-provider usage/cost — Claude
+ * usage is captured separately by the credential proxy, so the Claude provider
+ * leaves this unset to avoid double-counting. `raw` carries the provider's
+ * original usage object so the host can recover fields we don't model yet.
+ */
+export interface ProviderUsage {
+  inputTokens?: number;
+  outputTokens?: number;
+  cachedInputTokens?: number;
+  raw?: unknown;
+}
+
 export type ProviderEvent =
   | { type: 'init'; continuation: string }
-  | { type: 'result'; text: string | null }
-  | { type: 'error'; message: string; retryable: boolean; classification?: string }
+  | { type: 'result'; text: string | null; usage?: ProviderUsage }
+  | {
+      type: 'error';
+      message: string;
+      retryable: boolean;
+      classification?: string;
+    }
   | { type: 'progress'; message: string }
   /**
    * Liveness signal. Providers MUST yield this on every underlying SDK

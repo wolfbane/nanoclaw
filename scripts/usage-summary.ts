@@ -7,6 +7,7 @@
  *   tsx scripts/usage-summary.ts --days 30       # last 30 days
  *   tsx scripts/usage-summary.ts --by-model      # break down by model
  *   tsx scripts/usage-summary.ts --by-source     # break down by source IP
+ *   tsx scripts/usage-summary.ts --by-provider   # Claude actual vs Codex shadow cost
  *   tsx scripts/usage-summary.ts --recent 20     # last 20 individual requests
  */
 import Database from 'better-sqlite3';
@@ -23,6 +24,7 @@ function main(): void {
   let days = 14;
   let byModel = false;
   let bySource = false;
+  let byProvider = false;
   let recent = 0;
   function readIntArg(flag: string, raw: string | undefined): number {
     if (raw === undefined) {
@@ -41,10 +43,11 @@ function main(): void {
     if (a === '--days') days = readIntArg('--days', argv[++i]);
     else if (a === '--by-model') byModel = true;
     else if (a === '--by-source') bySource = true;
+    else if (a === '--by-provider') byProvider = true;
     else if (a === '--recent') recent = readIntArg('--recent', argv[++i]);
     else if (a === '-h' || a === '--help') {
       console.log(
-        'Usage: tsx scripts/usage-summary.ts [--days N] [--by-model] [--by-source] [--recent N]',
+        'Usage: tsx scripts/usage-summary.ts [--days N] [--by-model] [--by-source] [--by-provider] [--recent N]',
       );
       return;
     }
@@ -118,6 +121,41 @@ function main(): void {
         `${String(r.source_ip ?? '?').padEnd(20)} ${String(r.n).padStart(8)}  $${fmt(r.cost as number, 7)}`,
       );
     }
+    db.close();
+    return;
+  }
+
+  if (byProvider) {
+    const rows = db
+      .prepare(
+        `SELECT COALESCE(provider,'anthropic') AS provider, COUNT(*) AS n,
+                SUM(input_tokens) AS i, SUM(output_tokens) AS o,
+                SUM(cost_usd) AS cost, SUM(shadow_cost_usd) AS shadow
+         FROM api_usage WHERE ts >= ? GROUP BY provider ORDER BY cost DESC`,
+      )
+      .all(since) as Array<Record<string, unknown>>;
+    console.log(
+      'provider     reqs    input        output     actual$   shadow$ (Claude-equiv)',
+    );
+    let actual = 0;
+    let shadow = 0;
+    for (const r of rows) {
+      actual += r.cost as number;
+      shadow += r.shadow as number;
+      console.log(
+        `${String(r.provider).padEnd(11)} ${String(r.n).padStart(4)}  ${String(r.i).padStart(10)}  ` +
+          `${String(r.o).padStart(9)}  $${fmt(r.cost as number, 6)}  $${fmt(r.shadow as number, 6)}`,
+      );
+    }
+    console.log(
+      `\nActual spend (${days}d):        $${actual.toFixed(2)}  (metered Claude)`,
+    );
+    console.log(
+      `If all-Claude (${days}d):        $${(actual + shadow).toFixed(2)}  (actual + Codex shadow)`,
+    );
+    console.log(
+      `Codex shadow run rate:        $${((shadow / days) * 30).toFixed(0)}/month  (vs the ChatGPT subscription price)`,
+    );
     db.close();
     return;
   }
