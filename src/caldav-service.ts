@@ -243,6 +243,16 @@ function parseRemindersFromObjects(objects: DAVCalendarObject[]): Reminder[] {
   return reminders;
 }
 
+/**
+ * node-ical 0.26 types text properties as ParameterValue — a bare string, or
+ * `{ val, params }` when iCal parameters (e.g. LANGUAGE) are present. Coerce to
+ * a plain string for our flat CalendarEvent shape.
+ */
+function icalText(v: nodeIcal.ParameterValue | undefined): string | undefined {
+  if (v == null) return undefined;
+  return typeof v === 'string' ? v : v.val;
+}
+
 function parseEventsFromObjects(objects: DAVCalendarObject[]): CalendarEvent[] {
   const events: CalendarEvent[] = [];
   for (const obj of objects) {
@@ -256,20 +266,23 @@ function parseEventsFromObjects(objects: DAVCalendarObject[]): CalendarEvent[] {
     }
     for (const key of Object.keys(parsed)) {
       const component = parsed[key];
-      if (component.type !== 'VEVENT') continue;
-      const ve = component;
+      // node-ical 0.26 types entries as CalendarComponent | VCalendar |
+      // undefined, and VCalendar's discriminant doesn't narrow cleanly, so
+      // guard undefined and cast to VEvent after the type check.
+      if (!component || component.type !== 'VEVENT') continue;
+      const ve = component as nodeIcal.VEvent;
       const isAllDay = ve.datetype === 'date';
       events.push({
         uid: ve.uid,
         url: obj.url,
         etag: obj.etag,
-        summary: ve.summary || '',
+        summary: icalText(ve.summary) || '',
         start:
           ve.start instanceof Date ? ve.start.toISOString() : String(ve.start),
         end: ve.end instanceof Date ? ve.end.toISOString() : String(ve.end),
         all_day: isAllDay,
-        location: ve.location || undefined,
-        description: ve.description || undefined,
+        location: icalText(ve.location) || undefined,
+        description: icalText(ve.description) || undefined,
       });
     }
   }
