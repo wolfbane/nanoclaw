@@ -518,6 +518,11 @@ export async function processTaskIpc(
             if (!isNaN(ms) && ms > 0) {
               updates.next_run = new Date(Date.now() + ms).toISOString();
             }
+          } else if (updatedTask.schedule_type === 'once') {
+            // A one-time task's next_run IS its scheduled timestamp; reactivate
+            // so a reschedule actually fires (it may have already completed).
+            updates.next_run = updatedTask.schedule_value;
+            updates.status = 'active';
           }
         }
 
@@ -575,9 +580,22 @@ export async function processTaskIpc(
         // Preserve isMain from the existing registration so IPC config
         // updates (e.g. adding additionalMounts) don't strip the flag.
         const existingGroup = registeredGroups[data.jid];
+        if (existingGroup && existingGroup.folder !== data.folder) {
+          // Don't let a re-registration re-point an existing JID to a different
+          // folder — that would orphan its data dir / cause identity confusion.
+          logger.warn(
+            {
+              sourceGroup,
+              jid: data.jid,
+              existing: existingGroup.folder,
+              requested: data.folder,
+            },
+            'register_group cannot change an existing group folder — keeping original',
+          );
+        }
         deps.registerGroup(data.jid, {
           name: data.name,
-          folder: data.folder,
+          folder: existingGroup ? existingGroup.folder : data.folder,
           trigger: data.trigger,
           added_at: new Date().toISOString(),
           containerConfig: data.containerConfig,

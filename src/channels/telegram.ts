@@ -427,9 +427,19 @@ export class TelegramChannel implements Channel {
     });
 
     // Start polling — returns a Promise that resolves when started
-    return new Promise<void>((resolve) => {
+    return new Promise<void>((resolve, reject) => {
+      // grammy's start() rejects on fatal init failure (e.g. an invalid/revoked
+      // token); that rejection was previously discarded, so connect() would hang
+      // forever and block startup. Reject on it, and time out if neither fires.
+      const timer = setTimeout(() => {
+        reject(
+          new Error('Telegram bot start timed out (no onStart within 30s)'),
+        );
+      }, 30_000);
+      timer.unref();
       this.bot!.start({
         onStart: (botInfo) => {
+          clearTimeout(timer);
           logger.info(
             { username: botInfo.username, id: botInfo.id },
             'Telegram bot connected',
@@ -440,6 +450,9 @@ export class TelegramChannel implements Channel {
           );
           resolve();
         },
+      }).catch((err) => {
+        clearTimeout(timer);
+        reject(err instanceof Error ? err : new Error(String(err)));
       });
     });
   }

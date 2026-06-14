@@ -19,20 +19,54 @@ export function sendJson(
   res.end(payload);
 }
 
+// DAV JSON bodies (event/contact create-update) are tiny; cap to bound memory
+// (these servers are reachable from every container) and time out slow trickles.
+const MAX_DAV_BODY_BYTES = 1 * 1024 * 1024; // 1 MB
+const DAV_BODY_TIMEOUT_MS = 30_000;
+
 export async function readJsonBody<T>(req: IncomingMessage): Promise<T> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
-    req.on('data', (c) => chunks.push(c));
-    req.on('end', () => {
-      const raw = Buffer.concat(chunks).toString('utf-8');
-      if (!raw) return resolve({} as T);
-      try {
-        resolve(JSON.parse(raw) as T);
-      } catch (err) {
-        reject(err);
+    let size = 0;
+    let settled = false;
+    const settle = (fn: () => void): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      fn();
+    };
+    const timer = setTimeout(
+      () =>
+        settle(() => {
+          req.destroy();
+          reject(new Error('request body read timeout'));
+        }),
+      DAV_BODY_TIMEOUT_MS,
+    );
+    timer.unref();
+    req.on('data', (c) => {
+      size += c.length;
+      if (size > MAX_DAV_BODY_BYTES) {
+        settle(() => {
+          req.destroy();
+          reject(new Error('request body too large'));
+        });
+        return;
       }
+      chunks.push(c);
     });
-    req.on('error', reject);
+    req.on('end', () =>
+      settle(() => {
+        const raw = Buffer.concat(chunks).toString('utf-8');
+        if (!raw) return resolve({} as T);
+        try {
+          resolve(JSON.parse(raw) as T);
+        } catch (err) {
+          reject(err);
+        }
+      }),
+    );
+    req.on('error', (err) => settle(() => reject(err)));
   });
 }
 

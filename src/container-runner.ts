@@ -533,8 +533,25 @@ export async function runContainerAgent(
     let stdoutTruncated = false;
     let stderrTruncated = false;
 
-    container.stdin.write(JSON.stringify(input));
-    container.stdin.end();
+    // A container that exits before draining stdin would otherwise emit an
+    // unhandled 'error' (EPIPE) on this stream and crash the whole single-process
+    // orchestrator. The close/error handlers below still resolve the run with an
+    // error result, so just log here.
+    container.stdin.on('error', (err) => {
+      logger.warn(
+        { group: group.name, containerName, err },
+        'Container stdin write failed (container likely exited before consuming input)',
+      );
+    });
+    try {
+      container.stdin.write(JSON.stringify(input));
+      container.stdin.end();
+    } catch (err) {
+      logger.warn(
+        { group: group.name, containerName, err },
+        'Container stdin write threw',
+      );
+    }
 
     // Streaming output: parse OUTPUT_START/END marker pairs as they arrive
     let parseBuffer = '';
@@ -614,6 +631,13 @@ export async function runContainerAgent(
               'Failed to parse streamed output chunk',
             );
           }
+        }
+        // Bound the parse buffer: a runaway stream with no complete marker pair
+        // would otherwise grow without limit. Real results are under the output
+        // cap; keep only a marker-width tail so a marker split across chunks
+        // still matches.
+        if (parseBuffer.length > CONTAINER_MAX_OUTPUT_SIZE) {
+          parseBuffer = parseBuffer.slice(-OUTPUT_END_MARKER.length);
         }
       }
     });

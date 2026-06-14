@@ -19,6 +19,14 @@ import { recordApiUsage } from './db.js';
 import { readEnvFile } from './env.js';
 import { logger } from './logger.js';
 
+// Cap the per-request buffer used only for usage parsing (the response body
+// always streams straight through to the caller regardless). Past this, skip
+// usage tracking rather than buffer unbounded memory.
+const USAGE_BUFFER_CAP = 10 * 1024 * 1024; // 10 MB
+// Socket inactivity timeout for the upstream Anthropic request — a safety net
+// against a hung connection, not a tight SLA (active streams stay well under it).
+const UPSTREAM_TIMEOUT_MS = 10 * 60 * 1000; // 10 min
+
 // Anthropic published pricing (USD per million tokens). Keep in sync with
 // https://www.anthropic.com/pricing#api. Prefix-matched against the model
 // name returned in the response. Unknown models record tokens with $0 cost.
@@ -160,6 +168,19 @@ export function startCredentialProxy(
       const sourceIp = req.socket.remoteAddress ?? null;
       const chunks: Buffer[] = [];
       req.on('data', (c) => chunks.push(c));
+      req.on('error', (err) => {
+        // A container connection that resets mid-upload would otherwise emit an
+        // unhandled 'error' and crash the whole daemon (this proxy carries all
+        // Anthropic traffic for every group).
+        logger.warn(
+          { err, url: req.url },
+          'Credential proxy request stream error',
+        );
+        if (!res.headersSent) {
+          res.writeHead(400);
+          res.end();
+        }
+      });
       req.on('end', () => {
         const body = Buffer.concat(chunks);
         const headers: Record<string, string | number | string[] | undefined> =
@@ -206,14 +227,26 @@ export function startCredentialProxy(
             const isSse = (
               (upRes.headers['content-type'] as string) ?? ''
             ).includes('text/event-stream');
-            const respChunks: Buffer[] = trackUsage ? [] : [];
+            const respChunks: Buffer[] = [];
+            let respBytes = 0;
+            let usageBufferTruncated = false;
             const requestId =
               (upRes.headers['request-id'] as string) ??
               (upRes.headers['x-request-id'] as string) ??
               null;
 
             upRes.on('data', (chunk: Buffer) => {
-              if (trackUsage) respChunks.push(chunk);
+              // Always stream the body through; only the usage-parse buffer is
+              // capped so a huge response can't exhaust host memory.
+              if (trackUsage && !usageBufferTruncated) {
+                respBytes += chunk.length;
+                if (respBytes > USAGE_BUFFER_CAP) {
+                  usageBufferTruncated = true;
+                  respChunks.length = 0; // give up usage parse; stop buffering
+                } else {
+                  respChunks.push(chunk);
+                }
+              }
               res.write(chunk);
             });
             const encoding = (
@@ -221,7 +254,7 @@ export function startCredentialProxy(
             ).toLowerCase();
             upRes.on('end', () => {
               res.end();
-              if (!trackUsage) return;
+              if (!trackUsage || usageBufferTruncated) return;
               setImmediate(() => {
                 try {
                   const raw = Buffer.concat(respChunks);
@@ -273,6 +306,11 @@ export function startCredentialProxy(
             res.writeHead(502);
             res.end('Bad Gateway');
           }
+        });
+
+        upstream.setTimeout(UPSTREAM_TIMEOUT_MS, () => {
+          logger.warn({ url: req.url }, 'Credential proxy upstream timeout');
+          upstream.destroy(new Error('upstream timeout')); // -> upstream 'error' -> 502
         });
 
         upstream.write(body);

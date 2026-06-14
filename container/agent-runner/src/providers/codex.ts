@@ -304,7 +304,8 @@ async function* runOneTurn(
   // Mutable refs via object properties — TS can't track closure assignments
   // for narrowing, but property access keeps the declared type visible.
   const turnState: { error: Error | null } = { error: null };
-  let resultText = '';
+  let resultText = ''; // accumulated text of all completed agentMessages
+  let streamingText = ''; // deltas of the in-progress message
   let turnUsage: ProviderUsage | undefined;
   let turnDone = false;
 
@@ -338,14 +339,21 @@ async function* runOneTurn(
       }
       case 'item/agentMessage/delta': {
         const delta = params.delta as string;
-        if (delta) resultText += delta;
+        if (delta) streamingText += delta;
         break;
       }
       case 'item/completed': {
         const item = params.item as
           | { type?: string; text?: string }
           | undefined;
-        if (item?.type === 'agentMessage' && item.text) resultText = item.text;
+        if (item?.type === 'agentMessage') {
+          // Accumulate each completed message — a multi-message turn previously
+          // overwrote, keeping only the last. Prefer the authoritative text,
+          // fall back to the streamed deltas.
+          const text = item.text || streamingText;
+          if (text) resultText += (resultText ? '\n\n' : '') + text;
+          streamingText = '';
+        }
         break;
       }
       case 'thread/tokenUsage/updated':
@@ -418,7 +426,11 @@ async function* runOneTurn(
       return;
     }
 
-    yield { type: 'result', text: resultText || null, usage: turnUsage };
+    // Include any trailing message that streamed but never got an item/completed.
+    const finalText =
+      resultText +
+      (streamingText ? (resultText ? '\n\n' : '') + streamingText : '');
+    yield { type: 'result', text: finalText || null, usage: turnUsage };
   } finally {
     clearTimeout(timer);
     const idx = server.notificationHandlers.indexOf(handler);

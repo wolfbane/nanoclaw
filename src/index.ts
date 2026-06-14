@@ -376,7 +376,10 @@ async function main(): Promise<void> {
   }
 
   // Graceful shutdown handlers
+  let shuttingDown = false;
   const shutdown = async (signal: string) => {
+    if (shuttingDown) return; // re-entrancy guard: ignore a second signal
+    shuttingDown = true;
     logger.info({ signal }, 'Shutdown signal received');
     proxyServer.close();
     caldavServer?.close();
