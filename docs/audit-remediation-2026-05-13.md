@@ -30,9 +30,9 @@ Owns documentation drift and observable configuration knobs.
 
 - [x] **CLAUDE.md** — fix "carddav read-only" → "create/read/update — delete intentionally omitted" *(shipped `ad23d89`)*
 - [x] **README.md** — Apple-Container-only runtime; remove Docker as default *(shipped `ad23d89`)*
-- [ ] **`src/config.ts`** — add header comments explaining: why `POLL_INTERVAL=2000ms`, `IPC_POLL_INTERVAL=1000ms`, `SCHEDULER_POLL_INTERVAL=60000ms`, `IDLE_TIMEOUT=30min`, `CONTAINER_TIMEOUT=30min`, `CONTAINER_MAX_OUTPUT_SIZE=10MB`. Each constant gets a one-line "what changing this affects" comment.
-- [ ] **`src/config.ts`** — expose `POLL_INTERVAL`, `IPC_POLL_INTERVAL` as env-overridable (currently hardcoded). Pattern: same as `IDLE_TIMEOUT`.
-- [ ] **`src/container-runner.ts`** — log a `WARN` when output is truncated by `CONTAINER_MAX_OUTPUT_SIZE` (currently silent).
+- [x] **`src/config.ts`** — magic-number constants now carry one-line "what changing this affects" comments. *(2026-06-15)*
+- [x] **`src/config.ts`** — `POLL_INTERVAL`, `IPC_POLL_INTERVAL`, `SCHEDULER_POLL_INTERVAL` now env-overridable (same pattern as `IDLE_TIMEOUT`). *(2026-06-15)*
+- [x] **`src/container-runner.ts`** — stdout/stderr truncation already WARNs; added a one-time WARN when the marker parse-buffer overflows and is dropped. *(2026-06-15)*
 - [ ] **`.env.example`** — add `NANOCLAW_DATA_DIR` (multi-instance), `IDLE_TIMEOUT`, `CONTAINER_TIMEOUT`, port overrides for `CALDAV_SERVICE_PORT` / `CARDDAV_SERVICE_PORT` / `CREDENTIAL_PROXY_PORT`. One-line comment per var.
 - [ ] **launchd plist documentation** — add a comment-style doc note at the top of `com.nanoclaw.plist` explaining: plist `EnvironmentVariables` win over `.env` and `process.env`. Resolution order is plist → process.env → .env → hardcoded fallback.
 - [ ] **CLAUDE.md** — remove or correct the "per-group `container.json` files" reference (no such files actually exist on disk; `container_config` is stored in the DB instead).
@@ -63,9 +63,9 @@ Owns version pins, CVE remediation, transitive cleanup.
 - [ ] 🟡 **`hono` 5x moderate CVEs** — agent-runner, transitive. bodyLimit bypass, JSX/CSS injection, JWT validation, cache leakage.
 - [ ] 🟡 **`@anthropic-ai/sdk` ≥0.91.0 file perms** — agent-runner, transitive (via Agent SDK). Insecure file perms in memory tool.
 - [ ] 🟡 **`ip-address` XSS** — agent-runner, transitive. Address6 HTML methods.
-- [ ] 🟡 **Pin `uv` installer** in `container/Dockerfile:33` — currently curls latest from `astral.sh`.
-- [ ] 🟡 **Pin `faster-whisper`** version in `container/Dockerfile:37` — currently `pip install faster-whisper` unconstrained.
-- [ ] 🟢 **Resolve `cron-parser` version drift** — root pins `5.5.0`, agent-runner uses `^5.0.0`. Match exactly.
+- [x] 🟡 **Pin `uv` installer** in `container/Dockerfile` — now `ARG UV_VERSION=0.11.16` via the versioned install URL (was unversioned `astral.sh` curl). *(2026-06-15)*
+- [x] 🟡 **Pin `faster-whisper`** in `container/Dockerfile` — now `ARG FASTER_WHISPER_VERSION=1.2.1` (`pip install faster-whisper==…`). *(2026-06-15)*
+- [x] 🟢 **Resolve `cron-parser` version drift** — agent-runner now pins `5.5.0` to match root. *(2026-06-15)*
 
 **Verification protocol after each bump:**
 1. `npm install` (root) and `(cd container/agent-runner && npm install)`
@@ -247,3 +247,37 @@ Most were already resolved by intervening work; two were fixed this day.
 | 8 🟡 | `containerConfig` schema validation | **Fixed (commit e1bdc92)** — `safeParseContainerConfig()` + 5 unit tests. |
 
 Net: Bucket 4 effectively closed. Only #4 and #7 remain — cosmetic timer-`unref` hygiene, deferred as low value.
+
+---
+
+## 2026-06-15 — "fix everything that doesn't need data collection" sweep
+
+Cleared the verified review-squad backlog (`nanoclaw-{qkf,dec,3q4,r1k,3yo}`) plus
+the in-scope Bucket 1/2 items. Six commits, each typecheck + full-suite green
+(472 tests) and deployed (host restart; agent-runner via runner-cache refresh;
+one image rebuild for the Dockerfile pins).
+
+- **Host reliability/perf** (`qkf` #16/#22/#23/#27/#33, `dec` #7/#40, #35/#38):
+  async non-blocking `stopContainer`; process-group kill in remote-control;
+  boundary-aware mount blocked-pattern match; idempotent per-column DB
+  migrations; grace-period-honoring queue shutdown; error-ack for malformed IPC;
+  async zlib in the proxy; `readJsonBodyOr400` object-shape validation + all
+  CalDAV handlers.
+- **Agent-runner** (`r1k`, `qkf` #24/#25/#26/#13): maxTurns/maxBudgetUsd
+  guardrails; tightened `STALE_THREAD_RE`; partial-output-on-timeout for codex;
+  `/compact` keeps the container warm; drain IPC before honoring `_close`.
+- **container-runner** (`qkf` #17/#18/#19): signature-based runner-src cache
+  invalidation; skills sync prunes deletions; `--cpus` cap (+ env-tunable mem).
+- **DB** (`dec` #10): WAL + busy_timeout (daemon + CLI multi-process access).
+- **Cursor races** (`3q4` #4/#11/#28): oldest-first `getNewMessages` so a burst
+  can't bury a low-traffic trigger; stranded-IPC recovery on container exit.
+- **Codex rate-limit capture** (`3yo`): `account/rateLimits/updated` →
+  `codex_rate_limits` table → `usage-summary --rate-limits`.
+- **Bucket 2**: pinned `uv` 0.11.16 + `faster-whisper` 1.2.1 in the Dockerfile;
+  agent-runner `cron-parser` → `5.5.0` (image rebuilt + verified).
+- **Bucket 1**: `config.ts` magic-number docs + env-overridable poll intervals;
+  parse-buffer-overflow WARN; `.env.example` tuning section; OneCLI reframe.
+
+Deliberately deferred (out of scope): `nanoclaw-23s` (A/B eval — needs accrued
+data), Bucket 2 CVE bumps (need advisory/version lookups), Bucket 3 broader test
+expansion, Bucket 5 refactors, `07l` provider-interface/memory-scaffold.

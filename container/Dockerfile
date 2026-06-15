@@ -28,13 +28,18 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Install uv (fast Python package manager) system-wide.
+# Pinned (was an unversioned curl of astral.sh/latest) for reproducible builds —
+# bump deliberately. The versioned install URL fetches that exact release.
 # UV_INSTALL_DIR is the literal destination — must be /usr/local/bin, not /usr/local
 # (otherwise binaries land at /usr/local/uv, outside PATH).
-RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin INSTALLER_NO_MODIFY_PATH=1 sh
+ARG UV_VERSION=0.11.16
+RUN curl -LsSf https://astral.sh/uv/${UV_VERSION}/install.sh | env UV_INSTALL_DIR=/usr/local/bin INSTALLER_NO_MODIFY_PATH=1 sh
 
 # Pre-install faster-whisper so voice-message transcription works on first invocation
-# without a ~30s cold-start pip install inside the container.
-RUN pip install --break-system-packages --no-cache-dir faster-whisper
+# without a ~30s cold-start pip install inside the container. Pinned (was
+# unconstrained) for reproducible builds.
+ARG FASTER_WHISPER_VERSION=1.2.1
+RUN pip install --break-system-packages --no-cache-dir "faster-whisper==${FASTER_WHISPER_VERSION}"
 
 # Set Chromium path for agent-browser
 ENV AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium

@@ -110,7 +110,7 @@ Before creating a PR, adding a skill, or preparing any contribution, you MUST re
 - **`<internal>` tags**: Agents wrap internal reasoning in `<internal>...</internal>`; `src/router.ts` strips these before outbound. If the agent already called `send_message` directly, wrapping the final result in `<internal>` prevents a duplicate echo.
 - **Multi-instance**: `NANOCLAW_DATA_DIR` overrides where `store/`, `groups/`, `data/`, and IPC live (`src/config.ts`). Two instances can share one checkout but keep separate DBs/sessions by setting different data dirs in their launchd/systemd units.
 - **Cursor rollback semantics**: If a container errors *after* sending any output, the DB cursor is NOT rolled back (prevents duplicate user-visible replies). If it errors *before* output, the cursor rolls back for retry. See `src/index.ts`.
-- **Credentials**: NanoClaw does not use OneCLI. Credentials live in `.env` at the project root; the built-in credential proxy (`src/credential-proxy.ts`) injects them at request time. Apple Container is the only supported runtime.
+- **Credentials**: live in `.env` at the project root; the built-in credential proxy (`src/credential-proxy.ts`) injects them at request time so containers never see real secrets. Apple Container is the only supported runtime.
 - **CalDAV / iCloud app-specific password rotation**: Apple forces periodic rotation. On 401, `src/caldav-service.ts` logs the failure clearly (and `/health` flips `loginStatus: "failed"`). Regenerate at appleid.apple.com, update `ICLOUD_APP_PASSWORD` in `.env`, and restart NanoClaw. The service retries login every 60s until it succeeds.
 
 ## Troubleshooting

@@ -603,6 +603,7 @@ export async function runContainerAgent(
 
     // Streaming output: parse OUTPUT_START/END marker pairs as they arrive
     let parseBuffer = '';
+    let parseBufferOverflowed = false;
     let newSessionId: string | undefined;
     let outputChain = Promise.resolve();
     let outputChainError: Error | null = null;
@@ -702,6 +703,13 @@ export async function runContainerAgent(
         // cap; keep only a marker-width tail so a marker split across chunks
         // still matches.
         if (parseBuffer.length > CONTAINER_MAX_OUTPUT_SIZE) {
+          if (!parseBufferOverflowed) {
+            parseBufferOverflowed = true;
+            logger.warn(
+              { group: group.name, size: parseBuffer.length },
+              'Container output exceeded cap with no complete result marker — dropping unparsed buffer',
+            );
+          }
           parseBuffer = parseBuffer.slice(-OUTPUT_END_MARKER.length);
         }
       }
