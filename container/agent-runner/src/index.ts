@@ -637,6 +637,20 @@ async function main(): Promise<void> {
     prompt += '\n' + pending.join('\n');
   }
 
+  // Recovery containers (nanoclaw-3q4 #4) start with an empty prompt and rely on
+  // the IPC drain above to supply the stranded message. If nothing was drained
+  // (a concurrent container already took it), there's no work — exit cleanly
+  // rather than querying the provider with an empty prompt. Scheduled tasks with
+  // a script are exempt: the script is the work even when the prompt is empty.
+  if (
+    prompt.trim() === '' &&
+    !(containerInput.script && containerInput.isScheduledTask)
+  ) {
+    log('Empty prompt after IPC drain — nothing to do, exiting');
+    writeOutput({ status: 'success', result: null, newSessionId: sessionId });
+    return;
+  }
+
   // --- Slash command handling ---
   // Only known session slash commands are handled here. This prevents
   // accidental interception of user prompts that happen to start with '/'.

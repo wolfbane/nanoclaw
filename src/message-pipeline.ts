@@ -18,6 +18,7 @@ import {
   writeTasksSnapshot,
 } from './container-runner.js';
 import { getAllTasks, getMessagesSince } from './db.js';
+import { hasPendingIpcInput } from './group-folder.js';
 import { GroupQueue } from './group-queue.js';
 import { logger } from './logger.js';
 import { findChannel, formatMessages } from './router.js';
@@ -68,41 +69,56 @@ export async function processGroupMessages(
     MAX_MESSAGES_PER_PROMPT,
   );
 
-  if (missedMessages.length === 0) return true;
+  // Recovery for nanoclaw-3q4 #4: when no new DB messages remain but a follow-up
+  // is still sitting in IPC input (piped just before the previous container
+  // exited), start a container with an empty prompt — its startup drain pulls
+  // the stranded message in. Such messages were already trigger-approved and
+  // their cursor already advanced when first piped, so the session-command,
+  // trigger, and cursor bookkeeping below are skipped.
+  const recovering = missedMessages.length === 0;
+  if (recovering && !hasPendingIpcInput(group.folder)) return true;
+  if (recovering) {
+    logger.info(
+      { group: group.name },
+      'Draining stranded IPC follow-up via recovery container',
+    );
+  }
 
   // --- Session command interception (before trigger check) ---
-  const cmdResult = await handleSessionCommand({
-    missedMessages,
-    isMainGroup,
-    groupName: group.name,
-    triggerPattern: getTriggerPattern(group.trigger),
-    timezone: TIMEZONE,
-    deps: {
-      sendMessage: (text) => channel.sendMessage(chatJid, text),
-      setTyping: (typing) =>
-        channel.setTyping?.(chatJid, typing) ?? Promise.resolve(),
-      runAgent: (prompt, onOutput) =>
-        runAgent(group, prompt, chatJid, deps, onOutput),
-      closeStdin: () => deps.queue.closeStdin(chatJid),
-      advanceCursor: (ts) => setCursor(chatJid, ts),
-      formatMessages,
-      canSenderInteract: (msg) => {
-        const hasTrigger = getTriggerPattern(group.trigger).test(
-          msg.content.trim(),
-        );
-        return (
-          !resolveRequiresTrigger(group, isMainGroup) ||
-          (hasTrigger &&
-            (msg.is_from_me ||
-              isTriggerAllowed(chatJid, msg.sender, loadSenderAllowlist())))
-        );
+  if (!recovering) {
+    const cmdResult = await handleSessionCommand({
+      missedMessages,
+      isMainGroup,
+      groupName: group.name,
+      triggerPattern: getTriggerPattern(group.trigger),
+      timezone: TIMEZONE,
+      deps: {
+        sendMessage: (text) => channel.sendMessage(chatJid, text),
+        setTyping: (typing) =>
+          channel.setTyping?.(chatJid, typing) ?? Promise.resolve(),
+        runAgent: (prompt, onOutput) =>
+          runAgent(group, prompt, chatJid, deps, onOutput),
+        closeStdin: () => deps.queue.closeStdin(chatJid),
+        advanceCursor: (ts) => setCursor(chatJid, ts),
+        formatMessages,
+        canSenderInteract: (msg) => {
+          const hasTrigger = getTriggerPattern(group.trigger).test(
+            msg.content.trim(),
+          );
+          return (
+            !resolveRequiresTrigger(group, isMainGroup) ||
+            (hasTrigger &&
+              (msg.is_from_me ||
+                isTriggerAllowed(chatJid, msg.sender, loadSenderAllowlist())))
+          );
+        },
       },
-    },
-  });
-  if (cmdResult.handled) return cmdResult.success;
+    });
+    if (cmdResult.handled) return cmdResult.success;
+  }
   // --- End session command interception ---
 
-  if (resolveRequiresTrigger(group, isMainGroup)) {
+  if (!recovering && resolveRequiresTrigger(group, isMainGroup)) {
     const triggerPattern = getTriggerPattern(group.trigger);
     const allowlistCfg = loadSenderAllowlist();
     const hasTrigger = missedMessages.some(
@@ -115,12 +131,18 @@ export async function processGroupMessages(
     }
   }
 
-  const prompt = formatMessages(missedMessages, TIMEZONE);
+  // Empty in recovery: the stranded message arrives via the container's IPC
+  // drain rather than the prompt.
+  const prompt = recovering ? '' : formatMessages(missedMessages, TIMEZONE);
 
   // Advance cursor so the piping path in startMessageLoop won't re-fetch
-  // these messages. Save the old cursor so we can roll back on error.
+  // these messages. Save the old cursor so we can roll back on error. In
+  // recovery there are no DB messages to account for, so the cursor is left
+  // as-is (already past the stranded message).
   const previousCursor = peekCursor(chatJid);
-  setCursor(chatJid, missedMessages[missedMessages.length - 1].timestamp);
+  if (!recovering) {
+    setCursor(chatJid, missedMessages[missedMessages.length - 1].timestamp);
+  }
 
   logger.info(
     { group: group.name, messageCount: missedMessages.length },

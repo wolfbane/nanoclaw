@@ -610,7 +610,7 @@ describe('message query LIMIT', () => {
     }
   });
 
-  it('getNewMessages caps to limit and returns most recent in chronological order', () => {
+  it('getNewMessages caps to the OLDEST limit so the watermark advances without gaps', () => {
     const { messages, newTimestamp } = getNewMessages(
       ['group@g.us'],
       '2024-01-01T00:00:00.000Z',
@@ -618,12 +618,48 @@ describe('message query LIMIT', () => {
       3,
     );
     expect(messages).toHaveLength(3);
-    expect(messages[0].content).toBe('message 8');
-    expect(messages[2].content).toBe('message 10');
-    // Chronological order preserved
+    // Oldest-first (regression guard for nanoclaw-3q4 #11/#28): a >limit burst
+    // must not push older messages permanently below the watermark unseen.
+    expect(messages[0].content).toBe('message 1');
+    expect(messages[2].content).toBe('message 3');
     expect(messages[1].timestamp > messages[0].timestamp).toBe(true);
-    // newTimestamp reflects latest returned row
-    expect(newTimestamp).toBe('2024-01-01T00:00:10.000Z');
+    // Watermark = newest RETURNED row (3rd oldest), so the next poll resumes at
+    // message 4 instead of skipping ahead to message 10.
+    expect(newTimestamp).toBe('2024-01-01T00:00:03.000Z');
+  });
+
+  it('does not drop a low-traffic group trigger when a chatty group floods the batch (3q4 #11)', () => {
+    _initTestDatabase();
+    storeChatMetadata('chatty@g.us', '2024-01-01T00:00:00.000Z');
+    storeChatMetadata('quiet@g.us', '2024-01-01T00:00:00.000Z');
+    // Quiet group's (older) message would be the one a newest-first LIMIT drops.
+    store({
+      id: 'q-1',
+      chat_jid: 'quiet@g.us',
+      sender: 'user@s.whatsapp.net',
+      sender_name: 'User',
+      content: '@Andy do the thing',
+      timestamp: '2024-01-01T00:00:01.000Z',
+    });
+    for (let i = 2; i <= 5; i++) {
+      store({
+        id: `c-${i}`,
+        chat_jid: 'chatty@g.us',
+        sender: 'user@s.whatsapp.net',
+        sender_name: 'User',
+        content: `chatter ${i}`,
+        timestamp: `2024-01-01T00:00:0${i}.000Z`,
+      });
+    }
+    const { messages } = getNewMessages(
+      ['chatty@g.us', 'quiet@g.us'],
+      '2024-01-01T00:00:00.000Z',
+      'Andy',
+      3,
+    );
+    // Oldest-first batch includes the quiet group's trigger; newest-first would
+    // have returned only the 3 newest chatty messages and skipped it forever.
+    expect(messages.some((m) => m.chat_jid === 'quiet@g.us')).toBe(true);
   });
 
   it('getMessagesSince caps to limit and returns most recent in chronological order', () => {

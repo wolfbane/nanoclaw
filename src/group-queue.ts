@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 
 import { DATA_DIR, MAX_CONCURRENT_CONTAINERS } from './config.js';
+import { hasPendingIpcInput } from './group-folder.js';
 import { logger } from './logger.js';
 
 interface QueuedTask {
@@ -224,11 +225,27 @@ export class GroupQueue {
       logger.error({ groupJid, err }, 'Error processing messages for group');
       this.scheduleRetry(groupJid, state);
     } finally {
+      // A follow-up piped via IPC in the window between the container deciding
+      // to exit and us observing it would otherwise sit undrained until the
+      // next unrelated trigger (nanoclaw-3q4 #4). If input remains, re-drive so
+      // a fresh container drains it.
+      const exitedFolder = state.groupFolder;
       state.active = false;
       state.process = null;
       state.containerName = null;
       state.groupFolder = null;
       this.activeCount--;
+      if (
+        exitedFolder &&
+        !state.pendingMessages &&
+        hasPendingIpcInput(exitedFolder)
+      ) {
+        logger.info(
+          { groupJid, folder: exitedFolder },
+          'Stranded IPC input after container exit — re-driving',
+        );
+        state.pendingMessages = true;
+      }
       this.drainGroup(groupJid);
     }
   }

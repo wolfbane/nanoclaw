@@ -507,18 +507,23 @@ export function getNewMessages(
   const placeholders = jids.map(() => '?').join(',');
   // Filter bot messages using both the is_bot_message flag AND the content
   // prefix as a backstop for messages written before the migration ran.
-  // Subquery takes the N most recent, outer query re-sorts chronologically.
+  // Take the N OLDEST unseen messages (ASC), not the newest: the caller
+  // advances the global "seen" watermark to max(returned timestamp), so newest-
+  // first would let a >LIMIT burst (or one chatty group flooding the batch)
+  // push older messages — including a low-traffic group's trigger — permanently
+  // below the watermark, never surfacing them for trigger detection. Oldest-
+  // first advances the watermark without gaps; the next poll picks up the rest.
+  // (Per-group prompts are still built from the newest messages via
+  // getMessagesSince, so this doesn't replay stale backlog into a prompt.)
   const sql = `
-    SELECT * FROM (
-      SELECT id, chat_jid, sender, sender_name, content, timestamp, is_from_me,
-             reply_to_message_id, reply_to_message_content, reply_to_sender_name
-      FROM messages
-      WHERE timestamp > ? AND chat_jid IN (${placeholders})
-        AND is_bot_message = 0 AND content NOT LIKE ?
-        AND content != '' AND content IS NOT NULL
-      ORDER BY timestamp DESC
-      LIMIT ?
-    ) ORDER BY timestamp
+    SELECT id, chat_jid, sender, sender_name, content, timestamp, is_from_me,
+           reply_to_message_id, reply_to_message_content, reply_to_sender_name
+    FROM messages
+    WHERE timestamp > ? AND chat_jid IN (${placeholders})
+      AND is_bot_message = 0 AND content NOT LIKE ?
+      AND content != '' AND content IS NOT NULL
+    ORDER BY timestamp ASC
+    LIMIT ?
   `;
 
   const rows = db

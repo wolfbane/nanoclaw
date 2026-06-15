@@ -1,3 +1,4 @@
+import fs from 'fs';
 import path from 'path';
 
 import { DATA_DIR, GROUPS_DIR } from './config.js';
@@ -41,4 +42,21 @@ export function resolveGroupIpcPath(folder: string): string {
   const ipcPath = path.resolve(ipcBaseDir, folder);
   ensureWithinBase(ipcBaseDir, ipcPath);
   return ipcPath;
+}
+
+/**
+ * True if the group's IPC input dir holds at least one pending `.json` message
+ * file. Used to recover a follow-up that was piped via IPC just before the
+ * previous container exited (nanoclaw-3q4 #4): the cursor was advanced
+ * optimistically, so without this check the stranded message would sit
+ * undrained until the next unrelated trigger.
+ */
+export function hasPendingIpcInput(folder: string): boolean {
+  if (!isValidGroupFolder(folder)) return false;
+  const inputDir = path.join(resolveGroupIpcPath(folder), 'input');
+  try {
+    return fs.readdirSync(inputDir).some((f) => f.endsWith('.json'));
+  } catch {
+    return false;
+  }
 }
