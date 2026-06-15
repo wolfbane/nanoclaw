@@ -89,10 +89,12 @@ Tightens test coverage so reliability fixes (Bucket 4) have something to verify 
 
 **Items:**
 
-- [ ] 🔴 **DAV mocks accept any input** — known regression source. In `carddav-service.test.ts` and `caldav-service.test.ts`, modify the mock `createVCard`/`createCalendarObject` to:
-  - Reject filenames not matching `^[A-F0-9-]{36}\.(vcf|ics)$` with mock-403
-  - Reject vCards lacking `N:` line (`carddav` only) with mock-403
-  - These two assertions would have caught the original carddav PR bug class
+- [x] 🔴 **DAV mocks accept any input** — done *(2026-06-15)*. The tsdav mocks now
+  403 faithfully: filename must match `^[A-F0-9-]{36}\.(vcf|ics)$` (create), and
+  carddav bodies must carry an `N:` line (create + update); the service maps the
+  403 to 502, so every create/update happy-path test now guards filename/N:
+  correctness. Direct validator tests added. Verified the guard bites by
+  temporarily breaking `davFilename` (both create tests failed), then restored.
 - [ ] 🟡 **New `container-spawn-failures.test.ts`** — exercise: `spawn()` throws ENOENT (binary missing), OOM kill (SIGKILL), disk-full exit codes, signal-9 mid-execution.
 - [ ] 🟡 **New `mcp-lifecycle.test.ts`** — MCP server fails to start, bridge connection timeout, credential exchange fails.
 - [ ] 🟡 **Telegram grammy mock tightening** — assert handlers actually receive their expected event types. Add tests for sendMessage network failures, file-download timeouts, malformed media context.
