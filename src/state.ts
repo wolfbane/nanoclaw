@@ -76,20 +76,43 @@ export function setCursor(chatJid: string, ts: string): void {
   saveState();
 }
 
-export function getSession(folder: string): string | undefined {
-  return sessions[folder];
+/**
+ * Storage key for a group's agent session. Claude keeps the bare folder (so
+ * existing rows and behavior are unchanged); other providers get a
+ * provider-qualified key. This stops a group that switches AGENT_PROVIDER
+ * (Claude<->Codex during the A/B) from resuming the *other* provider's session
+ * id — which would otherwise be passed as a continuation and rejected as a
+ * stale session (or, worse, hard-error if the staleness regex didn't catch the
+ * cross-provider id). `#` can't occur in a validated group folder, so the
+ * qualified key can never collide with a real folder. (nanoclaw-07l / 81ef193)
+ */
+export function sessionKey(folder: string, provider: string): string {
+  return provider === 'claude' ? folder : `${folder}#${provider}`;
+}
+
+export function getSession(
+  folder: string,
+  provider: string,
+): string | undefined {
+  return sessions[sessionKey(folder, provider)];
 }
 
 export function getSessions(): Record<string, string> {
   return { ...sessions };
 }
 
-export function setSessionId(folder: string, sessionId: string): void {
-  sessions[folder] = sessionId;
-  dbSetSession(folder, sessionId);
+export function setSessionId(
+  folder: string,
+  provider: string,
+  sessionId: string,
+): void {
+  const key = sessionKey(folder, provider);
+  sessions[key] = sessionId;
+  dbSetSession(key, sessionId);
 }
 
-export function clearSession(folder: string): void {
-  delete sessions[folder];
-  dbDeleteSession(folder);
+export function clearSession(folder: string, provider: string): void {
+  const key = sessionKey(folder, provider);
+  delete sessions[key];
+  dbDeleteSession(key);
 }

@@ -19,7 +19,7 @@ import {
 import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { logger } from './logger.js';
-import { clearSession } from './state.js';
+import { clearSession, sessionKey } from './state.js';
 import { RegisteredGroup, ScheduledTask, SendMessageFn } from './types.js';
 
 /**
@@ -180,11 +180,14 @@ async function runTask(
   // 'group' and 'rotate' both resume the group's current session; 'rotate'
   // additionally clears it after the task completes, forcing the next
   // interactive turn to start fresh.
+  // Per-provider session key (07l/81ef193) so a 'group'/'rotate' task resumes
+  // (and rotates) the session for the group's actual provider, never the other.
+  const provider = group.containerConfig?.env?.AGENT_PROVIDER ?? 'claude';
   const sessions = deps.getSessions();
   const resumesGroupSession =
     task.context_mode === 'group' || task.context_mode === 'rotate';
   const sessionId = resumesGroupSession
-    ? sessions[task.group_folder]
+    ? sessions[sessionKey(task.group_folder, provider)]
     : undefined;
 
   // After the task produces a result, close the container promptly.
@@ -285,7 +288,7 @@ async function runTask(
   // Rotate session only on success — a failed rotation would discard the
   // session before Adam had a chance to promote anything to CLAUDE.md.
   if (task.context_mode === 'rotate' && !error) {
-    clearSession(task.group_folder);
+    clearSession(task.group_folder, provider);
     logger.info(
       { taskId: task.id, group: task.group_folder },
       'Session rotated; next interactive turn will start fresh',

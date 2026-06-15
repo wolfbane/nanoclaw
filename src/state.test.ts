@@ -15,6 +15,7 @@ import {
   getSessions,
   loadState,
   peekCursor,
+  sessionKey,
   setCursor,
   setLastTimestamp,
   setSessionId,
@@ -48,8 +49,8 @@ describe('loadState', () => {
     setSession('whatsapp_family', 'sess-1');
     setSession('telegram_dev', 'sess-2');
     loadState();
-    expect(getSession('whatsapp_family')).toBe('sess-1');
-    expect(getSession('telegram_dev')).toBe('sess-2');
+    expect(getSession('whatsapp_family', 'claude')).toBe('sess-1');
+    expect(getSession('telegram_dev', 'claude')).toBe('sess-2');
     expect(Object.keys(getSessions())).toHaveLength(2);
   });
 });
@@ -114,24 +115,40 @@ describe('getCursor (with recovery)', () => {
 describe('session mutations', () => {
   it('setSessionId stores in memory and persists', () => {
     loadState();
-    setSessionId('whatsapp_family', 'sess-abc');
-    expect(getSession('whatsapp_family')).toBe('sess-abc');
+    setSessionId('whatsapp_family', 'claude', 'sess-abc');
+    expect(getSession('whatsapp_family', 'claude')).toBe('sess-abc');
     // Re-load to verify persistence
     loadState();
-    expect(getSession('whatsapp_family')).toBe('sess-abc');
+    expect(getSession('whatsapp_family', 'claude')).toBe('sess-abc');
   });
 
   it('clearSession removes from memory and DB', () => {
     loadState();
-    setSessionId('whatsapp_family', 'sess-abc');
-    clearSession('whatsapp_family');
-    expect(getSession('whatsapp_family')).toBeUndefined();
+    setSessionId('whatsapp_family', 'claude', 'sess-abc');
+    clearSession('whatsapp_family', 'claude');
+    expect(getSession('whatsapp_family', 'claude')).toBeUndefined();
     loadState();
-    expect(getSession('whatsapp_family')).toBeUndefined();
+    expect(getSession('whatsapp_family', 'claude')).toBeUndefined();
   });
 
   it('getSession returns undefined for unknown folder', () => {
     loadState();
-    expect(getSession('missing')).toBeUndefined();
+    expect(getSession('missing', 'claude')).toBeUndefined();
+  });
+
+  it('keys sessions per-provider so a provider switch never reuses the wrong id', () => {
+    loadState();
+    setSessionId('grp', 'claude', 'claude-session');
+    setSessionId('grp', 'codex', 'codex-thread');
+    // Same folder, different providers → independent slots.
+    expect(getSession('grp', 'claude')).toBe('claude-session');
+    expect(getSession('grp', 'codex')).toBe('codex-thread');
+    // Claude keeps the bare-folder key (back-compat); codex is qualified.
+    expect(sessionKey('grp', 'claude')).toBe('grp');
+    expect(sessionKey('grp', 'codex')).toBe('grp#codex');
+    // Clearing one provider leaves the other intact.
+    clearSession('grp', 'claude');
+    expect(getSession('grp', 'claude')).toBeUndefined();
+    expect(getSession('grp', 'codex')).toBe('codex-thread');
   });
 });

@@ -228,7 +228,10 @@ export async function runAgent(
   onOutput?: (output: ContainerOutput) => Promise<void>,
 ): Promise<'success' | 'error'> {
   const isMain = group.isMain === true;
-  const sessionId = getSession(group.folder);
+  // Session continuations are keyed per-provider so a group that switches
+  // AGENT_PROVIDER never resumes the other provider's session id (07l/81ef193).
+  const provider = group.containerConfig?.env?.AGENT_PROVIDER ?? 'claude';
+  const sessionId = getSession(group.folder, provider);
 
   // Update tasks snapshot for container to read (filtered by group)
   const tasks = getAllTasks();
@@ -259,7 +262,7 @@ export async function runAgent(
   const wrappedOnOutput = onOutput
     ? async (output: ContainerOutput) => {
         if (output.newSessionId) {
-          setSessionId(group.folder, output.newSessionId);
+          setSessionId(group.folder, provider, output.newSessionId);
         }
         await onOutput(output);
       }
@@ -282,7 +285,7 @@ export async function runAgent(
     );
 
     if (output.newSessionId) {
-      setSessionId(group.folder, output.newSessionId);
+      setSessionId(group.folder, provider, output.newSessionId);
     }
 
     if (output.status === 'error') {
@@ -298,7 +301,7 @@ export async function runAgent(
           { group: group.name, staleSessionId: sessionId, error: output.error },
           'Stale session detected — clearing for next retry',
         );
-        clearSession(group.folder);
+        clearSession(group.folder, provider);
       }
 
       logger.error(
