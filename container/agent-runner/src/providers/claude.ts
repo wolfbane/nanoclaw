@@ -30,6 +30,14 @@ import type {
 
 const STALE_SESSION_RE = /no conversation found|ENOENT.*\.jsonl|session.*not found/i;
 
+/** Parse a positive number from env, else the fallback. */
+function envNum(name: string, fallback: number): number {
+  const v = process.env[name];
+  if (!v) return fallback;
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
 interface SDKUserMessage {
   type: 'user';
   message: { role: 'user'; content: string };
@@ -153,6 +161,12 @@ export class ClaudeProvider implements AgentProvider {
       settingSources: this.opts.settingSources ?? ['project', 'user'],
       mcpServers: mcpServers as unknown as SDKOptions['mcpServers'],
       hooks: this.opts.hooks,
+      // Runaway-spend guardrails — tail-risk insurance (previously only the
+      // 30-min container timeout + 10MB output cap existed; neither caps
+      // tokens/cost). Generous per-run ceilings; operator-tunable via env or a
+      // group's container_config.env. The SDK ends the query on cap-hit.
+      maxTurns: envNum('CLAUDE_MAX_TURNS', 250),
+      maxBudgetUsd: envNum('CLAUDE_MAX_BUDGET_USD', 5),
     };
 
     const sdkResult = sdkQuery({

@@ -417,7 +417,22 @@ async function* runOneTurn(
 
     while (buffer.length > 0) yield buffer.shift()!;
 
+    // Any text captured before this point (completed messages + the trailing
+    // in-progress stream). Computed once so both the error and success paths
+    // surface it.
+    const finalText =
+      resultText +
+      (streamingText ? (resultText ? '\n\n' : '') + streamingText : '');
+
     if (turnState.error) {
+      // A timed-out (or failed) turn often did real work that simply never got
+      // a turn/completed. Surface that partial output as a result first so it
+      // isn't discarded, then the error — the host delivers the partial reply
+      // and still flags the failure (its cursor treats an error-after-output as
+      // a visible reply rather than a rollback).
+      if (finalText) {
+        yield { type: 'result', text: finalText, usage: turnUsage };
+      }
       yield {
         type: 'error',
         message: turnState.error.message,
@@ -426,10 +441,6 @@ async function* runOneTurn(
       return;
     }
 
-    // Include any trailing message that streamed but never got an item/completed.
-    const finalText =
-      resultText +
-      (streamingText ? (resultText ? '\n\n' : '') + streamingText : '');
     yield { type: 'result', text: finalText || null, usage: turnUsage };
   } finally {
     clearTimeout(timer);

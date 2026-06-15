@@ -31,7 +31,8 @@ const INIT_TIMEOUT_MS = 30_000;
  * Shared with `codex.ts`'s `isSessionInvalid` to keep the two detection
  * paths in sync.
  */
-export const STALE_THREAD_RE = /thread\s+not\s+found|unknown\s+thread|thread[_\s]id|no such thread/i;
+export const STALE_THREAD_RE =
+  /thread\s+not\s+found|unknown\s+thread|no\s+such\s+thread|(?:invalid|unknown|unrecognized|nonexistent|non-existent|no\s+such)\s+thread[_\s]?id|thread[_\s]?id\s+(?:not\s+found|unknown|invalid|is\s+invalid|does\s+not\s+exist|no\s+longer\s+(?:exists|valid))/i;
 
 /**
  * Escape a string for emission inside a TOML basic string (double-quoted).

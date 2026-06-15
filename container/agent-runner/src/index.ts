@@ -311,13 +311,17 @@ function drainIpcInput(): string[] {
 function waitForIpcMessage(): Promise<string | null> {
   return new Promise((resolve) => {
     const poll = () => {
-      if (shouldClose()) {
-        resolve(null);
-        return;
-      }
+      // Drain messages BEFORE honoring _close: a follow-up that arrived in the
+      // same tick as (or just before) the close sentinel must not be dropped.
+      // The sentinel persists for the next wait, so we process the message now
+      // and close on the following cycle.
       const messages = drainIpcInput();
       if (messages.length > 0) {
         resolve(messages.join('\n'));
+        return;
+      }
+      if (shouldClose()) {
+        resolve(null);
         return;
       }
       setTimeout(poll, IPC_POLL_MS);
@@ -447,17 +451,20 @@ async function runQuery(
   let closedDuringQuery = false;
   const pollIpcDuringQuery = () => {
     if (!ipcPolling) return;
+    // Pipe pending follow-ups into the active query BEFORE honoring _close, so
+    // a message arriving in the same tick as the close sentinel still reaches
+    // the running agent rather than being stranded when the stream ends.
+    const messages = drainIpcInput();
+    for (const text of messages) {
+      log(`Piping IPC message into active query (${text.length} chars)`);
+      agentQuery.push(text);
+    }
     if (shouldClose()) {
       log('Close sentinel detected during query, ending stream');
       closedDuringQuery = true;
       agentQuery.end();
       ipcPolling = false;
       return;
-    }
-    const messages = drainIpcInput();
-    for (const text of messages) {
-      log(`Piping IPC message into active query (${text.length} chars)`);
-      agentQuery.push(text);
     }
     setTimeout(pollIpcDuringQuery, IPC_POLL_MS);
   };
@@ -637,6 +644,12 @@ async function main(): Promise<void> {
   const trimmedPrompt = prompt.trim();
   const isSessionSlashCommand = KNOWN_SESSION_COMMANDS.has(trimmedPrompt);
 
+  // Set true when a session command completed successfully — the main query
+  // loop then skips its first query (the command already produced output) and
+  // keeps the container warm waiting for the next IPC message instead of
+  // exiting, so the (now-compacted) session stays live.
+  let slashHandled = false;
+
   if (isSessionSlashCommand) {
     log(`Handling session command: ${trimmedPrompt}`);
 
@@ -766,7 +779,15 @@ async function main(): Promise<void> {
         newSessionId: slashSessionId,
       });
     }
-    return;
+
+    if (hadError) return; // failed /compact: exit the container as before
+
+    // Success: don't exit — adopt the post-compact session and fall through to
+    // the main loop, which (via slashHandled) skips its first query and goes
+    // straight to waiting for the next IPC message / _close, keeping the
+    // container warm just like after a normal query.
+    sessionId = slashSessionId ?? sessionId;
+    slashHandled = true;
   }
   // --- End slash command handling ---
 
@@ -792,41 +813,51 @@ async function main(): Promise<void> {
     prompt = `[SCHEDULED TASK]\n\nScript output:\n${JSON.stringify(scriptResult.data, null, 2)}\n\nInstructions:\n${containerInput.prompt}`;
   }
 
-  // Query loop: run query → wait for IPC message → run new query → repeat
+  // Query loop: run query → wait for IPC message → run new query → repeat.
+  // When a session command (e.g. /compact) just ran, skip the first query —
+  // its output is already emitted — and go straight to waiting.
   let resumeAt: string | undefined;
+  let skipQuery = slashHandled;
   try {
     while (true) {
-      log(
-        `Starting query (session: ${sessionId || 'new'}, resumeAt: ${resumeAt || 'latest'})...`,
-      );
+      if (!skipQuery) {
+        log(
+          `Starting query (session: ${sessionId || 'new'}, resumeAt: ${resumeAt || 'latest'})...`,
+        );
 
-      const queryResult = await runQuery(
-        prompt,
-        sessionId,
-        mcpServerPath,
-        caldavMcpServerPath,
-        carddavMcpServerPath,
-        containerInput,
-        sdkEnv,
-        resumeAt,
-      );
-      if (queryResult.newSessionId) {
-        sessionId = queryResult.newSessionId;
-      }
-      if (queryResult.lastAssistantUuid) {
-        resumeAt = queryResult.lastAssistantUuid;
-      }
+        const queryResult = await runQuery(
+          prompt,
+          sessionId,
+          mcpServerPath,
+          caldavMcpServerPath,
+          carddavMcpServerPath,
+          containerInput,
+          sdkEnv,
+          resumeAt,
+        );
+        if (queryResult.newSessionId) {
+          sessionId = queryResult.newSessionId;
+        }
+        if (queryResult.lastAssistantUuid) {
+          resumeAt = queryResult.lastAssistantUuid;
+        }
 
-      // If _close was consumed during the query, exit immediately.
-      // Don't emit a session-update marker (it would reset the host's
-      // idle timer and cause a 30-min delay before the next _close).
-      if (queryResult.closedDuringQuery) {
-        log('Close sentinel consumed during query, exiting');
-        break;
-      }
+        // If _close was consumed during the query, exit immediately.
+        // Don't emit a session-update marker (it would reset the host's
+        // idle timer and cause a 30-min delay before the next _close).
+        if (queryResult.closedDuringQuery) {
+          log('Close sentinel consumed during query, exiting');
+          break;
+        }
 
-      // Emit session update so host can track it
-      writeOutput({ status: 'success', result: null, newSessionId: sessionId });
+        // Emit session update so host can track it
+        writeOutput({
+          status: 'success',
+          result: null,
+          newSessionId: sessionId,
+        });
+      }
+      skipQuery = false;
 
       log('Query ended, waiting for next IPC message...');
 

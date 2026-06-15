@@ -40,6 +40,9 @@ describe('STALE_THREAD_RE', () => {
     expect(STALE_THREAD_RE.test('unknown thread xyz')).toBe(true);
     expect(STALE_THREAD_RE.test('No such thread: abc')).toBe(true);
     expect(STALE_THREAD_RE.test('invalid thread_id')).toBe(true);
+    expect(STALE_THREAD_RE.test('thread_id not found')).toBe(true);
+    expect(STALE_THREAD_RE.test('thread id does not exist')).toBe(true);
+    expect(STALE_THREAD_RE.test('unknown thread id 019ec729')).toBe(true);
   });
 
   it('does not match transient or unrelated errors', () => {
@@ -47,5 +50,14 @@ describe('STALE_THREAD_RE', () => {
     expect(STALE_THREAD_RE.test('authentication failed')).toBe(false);
     expect(STALE_THREAD_RE.test('connection reset by peer')).toBe(false);
     expect(STALE_THREAD_RE.test('internal server error')).toBe(false);
+    // A bare thread_id reference must NOT trigger a fresh-thread fallback —
+    // these are validation/quota errors, not "this thread is gone".
+    expect(STALE_THREAD_RE.test('thread_id must be a string')).toBe(false);
+    expect(STALE_THREAD_RE.test('missing required parameter: thread_id')).toBe(
+      false,
+    );
+    expect(
+      STALE_THREAD_RE.test('rate limit exceeded for thread_id 019ec729'),
+    ).toBe(false);
   });
 });
