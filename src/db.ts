@@ -143,6 +143,18 @@ function createSchema(database: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_api_usage_ts ON api_usage(ts);
     CREATE INDEX IF NOT EXISTS idx_api_usage_model_ts ON api_usage(model, ts);
+
+    CREATE TABLE IF NOT EXISTS codex_rate_limits (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ts TEXT NOT NULL,
+      group_name TEXT,
+      plan_type TEXT,
+      primary_used_percent REAL,
+      secondary_used_percent REAL,
+      primary_resets_at TEXT,
+      secondary_resets_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_codex_rate_limits_ts ON codex_rate_limits(ts);
   `);
 
   // Column migrations for existing DBs. Each is independent and idempotent (see
@@ -815,6 +827,39 @@ export function recordCodexUsage(args: {
     });
   } catch (err) {
     logger.warn({ err }, 'Failed to record codex usage');
+  }
+}
+
+/**
+ * Record a Codex subscription rate-limit snapshot (one row per turn that
+ * reported one). The complement to recordCodexUsage's token shadow-cost: it
+ * captures how much of the flat ChatGPT plan's quota the A/B workload consumes.
+ */
+export function recordCodexRateLimits(args: {
+  groupName: string;
+  planType: string | null;
+  primaryUsedPercent: number | null;
+  secondaryUsedPercent: number | null;
+  primaryResetsAt: string | null;
+  secondaryResetsAt: string | null;
+}): void {
+  try {
+    db.prepare(
+      `INSERT INTO codex_rate_limits
+         (ts, group_name, plan_type, primary_used_percent,
+          secondary_used_percent, primary_resets_at, secondary_resets_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      new Date().toISOString(),
+      args.groupName,
+      args.planType,
+      args.primaryUsedPercent,
+      args.secondaryUsedPercent,
+      args.primaryResetsAt,
+      args.secondaryResetsAt,
+    );
+  } catch (err) {
+    logger.warn({ err }, 'Failed to record codex rate limits');
   }
 }
 

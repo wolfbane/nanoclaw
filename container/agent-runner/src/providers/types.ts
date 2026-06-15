@@ -86,10 +86,27 @@ export interface AgentQuery {
  * leaves this unset to avoid double-counting. `raw` carries the provider's
  * original usage object so the host can recover fields we don't model yet.
  */
+/**
+ * Subscription rate-limit snapshot (Codex on a flat ChatGPT plan emits this per
+ * turn via `account/rateLimits/updated`). The complement to token shadow-cost:
+ * it answers whether the plan's quota is enough for the workload. `primary` is
+ * the short (≈5h) window, `secondary` the long (≈weekly) window.
+ */
+export interface ProviderRateLimits {
+  primaryUsedPercent?: number;
+  secondaryUsedPercent?: number;
+  primaryResetsAt?: string;
+  secondaryResetsAt?: string;
+  planType?: string;
+  raw?: unknown;
+}
+
 export interface ProviderUsage {
   inputTokens?: number;
   outputTokens?: number;
   cachedInputTokens?: number;
+  /** Subscription quota snapshot, where the provider reports it (e.g. Codex). */
+  rateLimits?: ProviderRateLimits;
   raw?: unknown;
 }
 

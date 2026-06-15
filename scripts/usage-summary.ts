@@ -9,6 +9,7 @@
  *   tsx scripts/usage-summary.ts --by-source     # break down by source IP
  *   tsx scripts/usage-summary.ts --by-provider   # Claude actual vs Codex shadow cost
  *   tsx scripts/usage-summary.ts --recent 20     # last 20 individual requests
+ *   tsx scripts/usage-summary.ts --rate-limits   # Codex subscription quota usage
  */
 import Database from 'better-sqlite3';
 import path from 'path';
@@ -25,6 +26,7 @@ function main(): void {
   let byModel = false;
   let bySource = false;
   let byProvider = false;
+  let rateLimits = false;
   let recent = 0;
   function readIntArg(flag: string, raw: string | undefined): number {
     if (raw === undefined) {
@@ -44,10 +46,11 @@ function main(): void {
     else if (a === '--by-model') byModel = true;
     else if (a === '--by-source') bySource = true;
     else if (a === '--by-provider') byProvider = true;
+    else if (a === '--rate-limits') rateLimits = true;
     else if (a === '--recent') recent = readIntArg('--recent', argv[++i]);
     else if (a === '-h' || a === '--help') {
       console.log(
-        'Usage: tsx scripts/usage-summary.ts [--days N] [--by-model] [--by-source] [--by-provider] [--recent N]',
+        'Usage: tsx scripts/usage-summary.ts [--days N] [--by-model] [--by-source] [--by-provider] [--rate-limits] [--recent N]',
       );
       return;
     }
@@ -156,6 +159,44 @@ function main(): void {
     console.log(
       `Codex shadow run rate:        $${((shadow / days) * 30).toFixed(0)}/month  (vs the ChatGPT subscription price)`,
     );
+    db.close();
+    return;
+  }
+
+  if (rateLimits) {
+    const latest = db
+      .prepare(
+        `SELECT ts, group_name, plan_type, primary_used_percent AS p,
+                secondary_used_percent AS s, primary_resets_at AS pr,
+                secondary_resets_at AS sr
+         FROM codex_rate_limits WHERE ts >= ? ORDER BY id DESC LIMIT 1`,
+      )
+      .get(since) as Record<string, unknown> | undefined;
+    const peak = db
+      .prepare(
+        `SELECT MAX(primary_used_percent) AS pp, MAX(secondary_used_percent) AS sp,
+                COUNT(*) AS n
+         FROM codex_rate_limits WHERE ts >= ?`,
+      )
+      .get(since) as Record<string, unknown>;
+    if (!latest) {
+      console.log(`No Codex rate-limit snapshots in the last ${days}d.`);
+      db.close();
+      return;
+    }
+    const pct = (v: unknown) => (v == null ? '   —' : `${fmt(v as number, 5)}%`);
+    console.log(`Codex subscription quota (last ${days}d):`);
+    console.log(`  plan:               ${String(latest.plan_type ?? '?')}`);
+    console.log(
+      `  latest snapshot:    ${String(latest.ts).slice(0, 19)} (${String(latest.group_name ?? '?')})`,
+    );
+    console.log(
+      `  primary  (~5h):     ${pct(latest.p)} used   peak ${pct(peak.pp)}   resets ${String(latest.pr ?? '?')}`,
+    );
+    console.log(
+      `  secondary(~week):   ${pct(latest.s)} used   peak ${pct(peak.sp)}   resets ${String(latest.sr ?? '?')}`,
+    );
+    console.log(`  snapshots recorded: ${String(peak.n)}`);
     db.close();
     return;
   }

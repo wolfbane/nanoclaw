@@ -22,6 +22,7 @@ import type {
   AgentQuery,
   ProviderEvent,
   ProviderOptions,
+  ProviderRateLimits,
   ProviderUsage,
   QueryInput,
 } from './types.js';
@@ -292,6 +293,39 @@ function extractCodexUsage(
   };
 }
 
+/**
+ * Extract a subscription rate-limit snapshot from an
+ * `account/rateLimits/updated` payload. The quota object may sit under
+ * `params.rateLimits` or directly on `params`; `planType` likewise. Resets are
+ * stringified so an epoch number or an ISO string both round-trip. Returns
+ * undefined when nothing useful is present (so we never record an empty row).
+ */
+export function extractCodexRateLimits(
+  params: Record<string, unknown>,
+): ProviderRateLimits | undefined {
+  const rl = ((params.rateLimits as Record<string, unknown>) ?? params) as
+    | Record<string, unknown>
+    | undefined;
+  if (!rl || typeof rl !== 'object') return undefined;
+  const primary = rl.primary as Record<string, unknown> | undefined;
+  const secondary = rl.secondary as Record<string, unknown> | undefined;
+  const planRaw = rl.planType ?? params.planType;
+  const planType = typeof planRaw === 'string' ? planRaw : undefined;
+  if (!primary && !secondary && !planType) return undefined;
+  const str = (o: Record<string, unknown> | undefined, k: string) =>
+    o && o[k] != null ? String(o[k]) : undefined;
+  return {
+    primaryUsedPercent: primary ? pickNum(primary, ['usedPercent']) : undefined,
+    secondaryUsedPercent: secondary
+      ? pickNum(secondary, ['usedPercent'])
+      : undefined,
+    primaryResetsAt: str(primary, 'resetsAt'),
+    secondaryResetsAt: str(secondary, 'resetsAt'),
+    planType,
+    raw: rl,
+  };
+}
+
 async function* runOneTurn(
   server: AppServer,
   threadId: string,
@@ -307,6 +341,7 @@ async function* runOneTurn(
   let resultText = ''; // accumulated text of all completed agentMessages
   let streamingText = ''; // deltas of the in-progress message
   let turnUsage: ProviderUsage | undefined;
+  let turnRateLimits: ProviderRateLimits | undefined;
   let turnDone = false;
 
   // Buffered event queue so we can `yield` across the async notification
@@ -360,6 +395,10 @@ async function* runOneTurn(
         // Codex reports tokens here, not in turn/completed. Keep the latest
         // (it fires per turn; `?? turnUsage` guards a malformed late event).
         turnUsage = extractCodexUsage(params) ?? turnUsage;
+        break;
+      case 'account/rateLimits/updated':
+        // Subscription quota snapshot (flat ChatGPT plan). Keep the latest.
+        turnRateLimits = extractCodexRateLimits(params) ?? turnRateLimits;
         break;
       case 'turn/completed':
         turnDone = true;
@@ -424,6 +463,13 @@ async function* runOneTurn(
       resultText +
       (streamingText ? (resultText ? '\n\n' : '') + streamingText : '');
 
+    // Merge the rate-limit snapshot onto the token usage so it rides the same
+    // result path to the host (present even when no token usage was reported).
+    const usage: ProviderUsage | undefined =
+      turnUsage || turnRateLimits
+        ? { ...turnUsage, ...(turnRateLimits ? { rateLimits: turnRateLimits } : {}) }
+        : undefined;
+
     if (turnState.error) {
       // A timed-out (or failed) turn often did real work that simply never got
       // a turn/completed. Surface that partial output as a result first so it
@@ -431,7 +477,7 @@ async function* runOneTurn(
       // and still flags the failure (its cursor treats an error-after-output as
       // a visible reply rather than a rollback).
       if (finalText) {
-        yield { type: 'result', text: finalText, usage: turnUsage };
+        yield { type: 'result', text: finalText, usage };
       }
       yield {
         type: 'error',
@@ -441,7 +487,7 @@ async function* runOneTurn(
       return;
     }
 
-    yield { type: 'result', text: finalText || null, usage: turnUsage };
+    yield { type: 'result', text: finalText || null, usage };
   } finally {
     clearTimeout(timer);
     const idx = server.notificationHandlers.indexOf(handler);

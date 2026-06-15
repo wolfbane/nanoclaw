@@ -35,7 +35,7 @@ import { validateAdditionalMounts } from './mount-security.js';
 // lookup of getProviderContainerConfig() below.
 import './providers/index.js';
 import { getProviderContainerConfig } from './providers/provider-container-registry.js';
-import { recordCodexUsage } from './db.js';
+import { recordCodexUsage, recordCodexRateLimits } from './db.js';
 import { RegisteredGroup } from './types.js';
 
 // Sentinel markers for robust output parsing (must match agent-runner)
@@ -53,11 +53,22 @@ export interface ContainerInput {
   script?: string;
 }
 
+/** Subscription rate-limit snapshot (e.g. Codex on a flat ChatGPT plan). */
+export interface ContainerRateLimits {
+  primaryUsedPercent?: number;
+  secondaryUsedPercent?: number;
+  primaryResetsAt?: string;
+  secondaryResetsAt?: string;
+  planType?: string;
+  raw?: unknown;
+}
+
 /** Per-turn token usage emitted by providers that surface it (e.g. codex). */
 export interface ContainerUsage {
   inputTokens?: number;
   outputTokens?: number;
   cachedInputTokens?: number;
+  rateLimits?: ContainerRateLimits;
   raw?: unknown;
 }
 
@@ -638,14 +649,31 @@ export async function runContainerAgent(
               parsed.usage &&
               group.containerConfig?.env?.AGENT_PROVIDER === 'codex'
             ) {
-              recordCodexUsage({
-                model: group.containerConfig?.env?.CODEX_MODEL ?? null,
-                groupName: group.name,
-                inputTokens: parsed.usage.inputTokens ?? 0,
-                cachedInputTokens: parsed.usage.cachedInputTokens ?? 0,
-                outputTokens: parsed.usage.outputTokens ?? 0,
-                durationMs: Date.now() - startTime,
-              });
+              const u = parsed.usage;
+              // Only record a token row when there are tokens — a turn that
+              // emitted only a rate-limit snapshot would otherwise log a
+              // spurious zero-token/$0 row.
+              if (u.inputTokens || u.outputTokens || u.cachedInputTokens) {
+                recordCodexUsage({
+                  model: group.containerConfig?.env?.CODEX_MODEL ?? null,
+                  groupName: group.name,
+                  inputTokens: u.inputTokens ?? 0,
+                  cachedInputTokens: u.cachedInputTokens ?? 0,
+                  outputTokens: u.outputTokens ?? 0,
+                  durationMs: Date.now() - startTime,
+                });
+              }
+              if (u.rateLimits) {
+                recordCodexRateLimits({
+                  groupName: group.name,
+                  planType: u.rateLimits.planType ?? null,
+                  primaryUsedPercent: u.rateLimits.primaryUsedPercent ?? null,
+                  secondaryUsedPercent:
+                    u.rateLimits.secondaryUsedPercent ?? null,
+                  primaryResetsAt: u.rateLimits.primaryResetsAt ?? null,
+                  secondaryResetsAt: u.rateLimits.secondaryResetsAt ?? null,
+                });
+              }
             }
             hadStreamingOutput = true;
             // Activity detected — reset the hard timeout
