@@ -47,6 +47,18 @@ const davClientState: DavClientBehavior = {
   objects: new Map(),
 };
 
+// Faithful stand-in for iCloud's PUT validation: it 403s a calendar object whose
+// filename isn't a UUID. The mock used to accept anything, so a regression that
+// emitted a bad filename (the DAV bug class, fixed in 4ec79bc) passed tests yet
+// 403'd in production. Function decl → hoist-safe for the vi.mock factory.
+function mockICloudReject(filename?: string): Response | null {
+  const UUID_FILENAME_RE = /^[A-F0-9-]{36}\.(vcf|ics)$/;
+  if (filename !== undefined && !UUID_FILENAME_RE.test(filename)) {
+    return new Response('Forbidden: filename must be a UUID', { status: 403 });
+  }
+  return null;
+}
+
 vi.mock('tsdav', () => ({
   DAVClient: class {
     constructor() {
@@ -87,6 +99,8 @@ vi.mock('tsdav', () => ({
       if (davClientState.createImpl) {
         return davClientState.createImpl(params);
       }
+      const rejected = mockICloudReject(params.filename);
+      if (rejected) return rejected;
       return new Response('', { status: 201 });
     }
     async updateCalendarObject(params: {
@@ -402,5 +416,23 @@ describe('caldav-service', () => {
       }),
     );
     expect(res.statusCode).toBe(502);
+  });
+});
+
+describe('mock iCloud DAV validation (harness faithfulness)', () => {
+  // Locks the strict mock so it keeps catching the regression class: any future
+  // create test that drives the service into emitting a non-UUID .ics filename
+  // will 403 (→ service 502) instead of silently passing.
+  it('accepts a UUID .ics filename', () => {
+    expect(
+      mockICloudReject('A30C0649-1111-2222-3333-444455556666.ics'),
+    ).toBeNull();
+  });
+
+  it('403s a non-UUID filename (incl. lowercase hex)', () => {
+    expect(mockICloudReject('event-1.ics')?.status).toBe(403);
+    expect(
+      mockICloudReject('a30c0649-1111-2222-3333-444455556666.ics')?.status,
+    ).toBe(403);
   });
 });

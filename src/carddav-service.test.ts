@@ -51,6 +51,30 @@ const davClientState: DavClientBehavior = {
   objectsByBook: new Map(),
 };
 
+// Faithful stand-in for iCloud's PUT validation. The real server 403s a vCard
+// whose filename isn't a UUID, or whose body lacks an `N:` line. The mock used
+// to accept anything, so a regression that emitted a bad filename / missing N:
+// (the original carddav bug class, fixed in 4ec79bc) passed tests yet 403'd in
+// production. Declared as a function so it's hoist-safe for the vi.mock factory.
+function mockICloudReject(opts: {
+  filename?: string;
+  body?: string;
+  requireN?: boolean;
+}): Response | null {
+  const UUID_FILENAME_RE = /^[A-F0-9-]{36}\.(vcf|ics)$/;
+  if (opts.filename !== undefined && !UUID_FILENAME_RE.test(opts.filename)) {
+    return new Response('Forbidden: filename must be a UUID', { status: 403 });
+  }
+  if (
+    opts.requireN &&
+    opts.body !== undefined &&
+    !/(?:^|\r?\n)N:/.test(opts.body)
+  ) {
+    return new Response('Forbidden: vCard missing N: line', { status: 403 });
+  }
+  return null;
+}
+
 vi.mock('tsdav', () => ({
   DAVClient: class {
     constructor() {
@@ -91,6 +115,12 @@ vi.mock('tsdav', () => ({
       if (davClientState.createImpl) {
         return davClientState.createImpl(params);
       }
+      const rejected = mockICloudReject({
+        filename: params.filename,
+        body: params.vCardString,
+        requireN: true,
+      });
+      if (rejected) return rejected;
       return new Response('', { status: 201 });
     }
     async updateVCard(params: {
@@ -104,6 +134,11 @@ vi.mock('tsdav', () => ({
       if (davClientState.updateImpl) {
         return davClientState.updateImpl(params);
       }
+      const rejected = mockICloudReject({
+        body: params.vCard.data,
+        requireN: true,
+      });
+      if (rejected) return rejected;
       return new Response(null, { status: 204 });
     }
   },
@@ -1137,5 +1172,41 @@ describe('carddav-service', () => {
       releaseFirst!();
       await slowGetPromise;
     });
+  });
+});
+
+describe('mock iCloud DAV validation (harness faithfulness)', () => {
+  // Locks the strict mock so it keeps catching the regression class: any future
+  // create/update test that drives the service into emitting a bad filename or a
+  // vCard without N: will now 403 (→ service 502), instead of silently passing.
+  const validVcf = 'A30C0649-1111-2222-3333-444455556666.vcf';
+  const validBody =
+    'BEGIN:VCARD\r\nVERSION:3.0\r\nN:Doe;Jane;;;\r\nFN:Jane Doe\r\nEND:VCARD\r\n';
+
+  it('accepts a UUID filename + N:-bearing vCard', () => {
+    expect(
+      mockICloudReject({ filename: validVcf, body: validBody, requireN: true }),
+    ).toBeNull();
+  });
+
+  it('403s a non-UUID filename', () => {
+    expect(
+      mockICloudReject({ filename: 'contact.vcf', body: validBody })?.status,
+    ).toBe(403);
+    // iCloud (and generateDavUid) emit UPPERCASE hex; lowercase must also 403.
+    expect(
+      mockICloudReject({
+        filename: 'a30c0649-1111-2222-3333-444455556666.vcf',
+        body: validBody,
+      })?.status,
+    ).toBe(403);
+  });
+
+  it('403s a vCard missing its N: line (and is not fooled by FN:)', () => {
+    const noN = 'BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Jane Doe\r\nEND:VCARD\r\n';
+    expect(
+      mockICloudReject({ filename: validVcf, body: noN, requireN: true })
+        ?.status,
+    ).toBe(403);
   });
 });
