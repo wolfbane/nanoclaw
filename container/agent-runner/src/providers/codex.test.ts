@@ -1,10 +1,6 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
-import {
-  buildMemorySection,
-  extractCodexRateLimits,
-  readProviderMemory,
-} from './codex.js';
+import { extractCodexRateLimits } from './codex.js';
 
 // account/rateLimits/updated parsing (nanoclaw-3yo). Runs from the host vitest
 // because codex.ts doesn't import the in-container Claude SDK.
@@ -44,37 +40,5 @@ describe('extractCodexRateLimits', () => {
   it('returns undefined when nothing useful is present', () => {
     expect(extractCodexRateLimits({})).toBeUndefined();
     expect(extractCodexRateLimits({ unrelated: 1 })).toBeUndefined();
-  });
-});
-
-// Per-provider memory scaffold (nanoclaw-07l / 2cfa86e).
-describe('provider memory scaffold', () => {
-  afterEach(() => {
-    delete process.env.NANOCLAW_PROVIDER_MEMORY;
-  });
-
-  it('buildMemorySection points at the file and includes current contents', () => {
-    const section = buildMemorySection('- prefers terse replies\n- TZ is PT');
-    expect(section).toContain('/workspace/group/MEMORY.md');
-    expect(section).toContain('- prefers terse replies');
-    expect(section).toContain('- TZ is PT');
-  });
-
-  it('buildMemorySection shows an empty marker when there is nothing yet', () => {
-    expect(buildMemorySection('   ')).toContain('(empty');
-  });
-
-  it('readProviderMemory is on by default (returns the section)', () => {
-    // No MEMORY.md on the host → empty section, but still present + directive.
-    const section = readProviderMemory();
-    expect(section).toBeDefined();
-    expect(section).toContain('Persistent memory');
-  });
-
-  it('readProviderMemory is disabled by NANOCLAW_PROVIDER_MEMORY=0/false', () => {
-    process.env.NANOCLAW_PROVIDER_MEMORY = '0';
-    expect(readProviderMemory()).toBeUndefined();
-    process.env.NANOCLAW_PROVIDER_MEMORY = 'false';
-    expect(readProviderMemory()).toBeUndefined();
   });
 });

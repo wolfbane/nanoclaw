@@ -108,52 +108,16 @@ function readAgentAndGlobalClaudeMd(): string | undefined {
   return parts.length > 0 ? parts.join('\n\n---\n\n') : undefined;
 }
 
-// Per-group persistent memory for non-Claude providers (07l / 2cfa86e). Claude
-// has built-in auto-memory; Codex doesn't, which skews the A/B quality
-// comparison. We give it a parallel scaffold: a per-group MEMORY.md (in the
-// already-writable group folder) inlined into the system prompt each session,
-// plus a directive to append durable facts to it. On by default for this
-// (non-Claude) provider; set NANOCLAW_PROVIDER_MEMORY=0 to disable.
-const PROVIDER_MEMORY_PATH = '/workspace/group/MEMORY.md';
-
-/** Build the system-prompt memory section from the current memory contents. */
-export function buildMemorySection(currentMemory: string): string {
-  const body = currentMemory.trim() || '(empty — nothing recorded yet)';
-  return [
-    '## Persistent memory',
-    '',
-    'You have a per-group memory file at `/workspace/group/MEMORY.md` that ' +
-      "persists across sessions — your long-term record of durable facts and the " +
-      "user's preferences.",
-    '',
-    'Current contents:',
-    body,
-    '',
-    'When you learn something durable worth keeping (a stable preference or ' +
-      'fact — not one-off task detail), append a concise bullet to ' +
-      '`/workspace/group/MEMORY.md` with your file tools. Keep it tight, ' +
-      "don't restate what's already there, and never store secrets.",
-  ].join('\n');
-}
-
-export function readProviderMemory(): string | undefined {
-  const flag = process.env.NANOCLAW_PROVIDER_MEMORY;
-  if (flag === '0' || flag === 'false') return undefined;
-  let current = '';
-  try {
-    current = fs.readFileSync(PROVIDER_MEMORY_PATH, 'utf-8');
-  } catch {
-    /* no memory file yet — the agent creates it on first write */
-  }
-  return buildMemorySection(current);
-}
-
+// Memory is the model-agnostic group-folder store (the CLAUDE.md "Memory
+// protocol": user-context.md / memories.md / commitments.md / memory/ tiers),
+// read and written by every provider through the same file tools — NOT a
+// per-provider silo. Codex reads it via the inlined CLAUDE.md below; there is
+// deliberately no separate Codex memory file. (07l: single source of truth.)
 function composeBaseInstructions(
   promptAddendum: string | undefined,
 ): string | undefined {
   const claudeMd = readAgentAndGlobalClaudeMd();
-  const memory = readProviderMemory();
-  const pieces = [claudeMd, memory, promptAddendum].filter((s): s is string =>
+  const pieces = [claudeMd, promptAddendum].filter((s): s is string =>
     Boolean(s),
   );
   return pieces.length > 0 ? pieces.join('\n\n---\n\n') : undefined;

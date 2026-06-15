@@ -254,28 +254,36 @@ function buildVolumeMounts(
     '.claude',
   );
   fs.mkdirSync(groupSessionsDir, { recursive: true });
+  // Claude env keys NanoClaw manages. Reconciled (not just created) on every
+  // run so a default change lands on groups created earlier too. Other keys in
+  // settings.json are preserved.
+  const managedClaudeEnv: Record<string, string> = {
+    // Enable agent swarms (subagent orchestration)
+    // https://code.claude.com/docs/en/agent-teams#orchestrate-teams-of-claude-code-sessions
+    CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1',
+    // Load CLAUDE.md from additional mounted directories
+    // https://code.claude.com/docs/en/memory#load-memory-from-additional-directories
+    CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: '1',
+    // Disable Claude's built-in auto-memory. Memory is the model-agnostic
+    // group-folder store (the CLAUDE.md "Memory protocol"), written through the
+    // agent — a private per-model silo would diverge from what other providers
+    // (e.g. Codex) see. Single source of truth. (07l)
+    CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
+  };
   const settingsFile = path.join(groupSessionsDir, 'settings.json');
-  if (!fs.existsSync(settingsFile)) {
-    fs.writeFileSync(
-      settingsFile,
-      JSON.stringify(
-        {
-          env: {
-            // Enable agent swarms (subagent orchestration)
-            // https://code.claude.com/docs/en/agent-teams#orchestrate-teams-of-claude-code-sessions
-            CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1',
-            // Load CLAUDE.md from additional mounted directories
-            // https://code.claude.com/docs/en/memory#load-memory-from-additional-directories
-            CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: '1',
-            // Enable Claude's memory feature (persists user preferences between sessions)
-            // https://code.claude.com/docs/en/memory#manage-auto-memory
-            CLAUDE_CODE_DISABLE_AUTO_MEMORY: '0',
-          },
-        },
-        null,
-        2,
-      ) + '\n',
-    );
+  let settings: { env?: Record<string, string>; [k: string]: unknown } = {};
+  try {
+    settings = JSON.parse(fs.readFileSync(settingsFile, 'utf-8'));
+  } catch {
+    /* missing or corrupt → start fresh */
+  }
+  const mergedEnv = { ...(settings.env ?? {}), ...managedClaudeEnv };
+  if (
+    !fs.existsSync(settingsFile) ||
+    JSON.stringify(settings.env ?? {}) !== JSON.stringify(mergedEnv)
+  ) {
+    settings.env = mergedEnv;
+    fs.writeFileSync(settingsFile, JSON.stringify(settings, null, 2) + '\n');
   }
 
   // Sync skills from container/skills/ into each group's .claude/skills/.
