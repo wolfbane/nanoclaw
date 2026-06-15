@@ -258,6 +258,14 @@ export function initDatabase(): void {
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
 
   db = new Database(dbPath);
+  // WAL: messages.db is accessed by separate processes — the daemon (writer)
+  // plus CLI tools (scripts/usage-summary.ts reads it, scripts/outbound.ts
+  // opens it). The default rollback journal serializes readers against the
+  // writer (SQLITE_BUSY under contention); WAL lets a reader and the writer
+  // proceed concurrently. busy_timeout adds a short wait so any residual lock
+  // contention retries rather than throwing.
+  db.pragma('journal_mode = WAL');
+  db.pragma('busy_timeout = 5000');
   createSchema(db);
 
   // Migrate from JSON files if they exist

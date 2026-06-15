@@ -133,24 +133,32 @@ export function redactContainerArgs(args: readonly string[]): string[] {
   return redacted;
 }
 
-function collectTsStats(dir: string): { count: number; maxMtimeMs: number } {
-  let count = 0;
-  let maxMtimeMs = 0;
+/**
+ * Stable signature of every .ts file under `dir`: sorted `relpath:size:mtimeMs`
+ * lines. A max-mtime + count heuristic missed two real cases — a file deleted
+ * and another added in the same change (count unchanged), and a *backward*
+ * mtime jump from a git checkout / worktree switch (newer-than-cache was false,
+ * so stale code kept running). Comparing the full signature catches additions,
+ * deletions, content edits (size/mtime), and time-travel alike.
+ */
+function collectTsSignature(dir: string): string {
+  const entries: string[] = [];
   const walk = (current: string) => {
-    const entries = fs.readdirSync(current, { withFileTypes: true });
-    for (const entry of entries) {
+    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
       const full = path.join(current, entry.name);
       if (entry.isDirectory()) {
         walk(full);
       } else if (entry.isFile() && entry.name.endsWith('.ts')) {
-        count++;
-        const mtime = fs.statSync(full).mtimeMs;
-        if (mtime > maxMtimeMs) maxMtimeMs = mtime;
+        const st = fs.statSync(full);
+        entries.push(
+          `${path.relative(dir, full)}:${st.size}:${Math.round(st.mtimeMs)}`,
+        );
       }
     }
   };
   walk(dir);
-  return { count, maxMtimeMs };
+  entries.sort();
+  return entries.join('\n');
 }
 
 interface VolumeMountsResult {
@@ -259,15 +267,34 @@ function buildVolumeMounts(
     );
   }
 
-  // Sync skills from container/skills/ into each group's .claude/skills/
+  // Sync skills from container/skills/ into each group's .claude/skills/.
+  // Skills are centrally managed (overwritten every run), so this mirrors the
+  // source exactly: each skill's dst is removed before copy (so a file deleted
+  // from the source doesn't linger inside it), and skills no longer present in
+  // the source are pruned from the destination. Previously deletions were never
+  // propagated, leaving stale skills mounted in the container indefinitely.
   const skillsSrc = path.join(process.cwd(), 'container', 'skills');
   const skillsDst = path.join(groupSessionsDir, 'skills');
   if (fs.existsSync(skillsSrc)) {
+    const wanted = new Set<string>();
     for (const skillDir of fs.readdirSync(skillsSrc)) {
       const srcDir = path.join(skillsSrc, skillDir);
       if (!fs.statSync(srcDir).isDirectory()) continue;
+      wanted.add(skillDir);
       const dstDir = path.join(skillsDst, skillDir);
+      fs.rmSync(dstDir, { recursive: true, force: true });
       fs.cpSync(srcDir, dstDir, { recursive: true });
+    }
+    // Prune skills that no longer exist in the source.
+    if (fs.existsSync(skillsDst)) {
+      for (const existing of fs.readdirSync(skillsDst)) {
+        if (!wanted.has(existing)) {
+          fs.rmSync(path.join(skillsDst, existing), {
+            recursive: true,
+            force: true,
+          });
+        }
+      }
     }
   }
   mounts.push({
@@ -304,20 +331,24 @@ function buildVolumeMounts(
     'agent-runner-src',
   );
   if (fs.existsSync(agentRunnerSrc)) {
-    // Scan all .ts files, not just index.ts — a new MCP file (e.g.
-    // caldav-mcp-stdio.ts) must invalidate the cache even though index.ts
-    // did not change.
-    const srcStats = collectTsStats(agentRunnerSrc);
-    const cachedStats = fs.existsSync(groupAgentRunnerDir)
-      ? collectTsStats(groupAgentRunnerDir)
-      : { count: 0, maxMtimeMs: 0 };
+    // Invalidate against a full signature of the source tree (covers a new MCP
+    // file, a deletion paired with an addition, and backward mtime jumps from
+    // worktree switches). The signature is stored in a sidecar next to — not
+    // inside — the cached copy so it isn't clobbered by cpSync.
+    const srcSig = collectTsSignature(agentRunnerSrc);
+    const sigPath = `${groupAgentRunnerDir}.sig`;
+    let cachedSig: string | null = null;
+    try {
+      cachedSig = fs.readFileSync(sigPath, 'utf-8');
+    } catch {
+      /* no cache yet */
+    }
     const needsCopy =
-      !fs.existsSync(groupAgentRunnerDir) ||
-      srcStats.count !== cachedStats.count ||
-      srcStats.maxMtimeMs > cachedStats.maxMtimeMs;
+      !fs.existsSync(groupAgentRunnerDir) || cachedSig !== srcSig;
     if (needsCopy) {
       fs.rmSync(groupAgentRunnerDir, { recursive: true, force: true });
       fs.cpSync(agentRunnerSrc, groupAgentRunnerDir, { recursive: true });
+      fs.writeFileSync(sigPath, srcSig);
     }
   }
   mounts.push({
@@ -369,10 +400,16 @@ function buildContainerArgs(
 ): string[] {
   const args: string[] = ['run', '-i', '--rm', '--name', containerName];
 
-  // Apple Container's default VM allocation (1 GiB) is tight for the agent
-  // runner under load and results in exit 137 (guest-kernel OOM) when the
-  // host is also under memory pressure. 2 GiB gives comfortable headroom.
-  args.push('--memory', '2G');
+  // Resource caps so a runaway agent can't starve the host. Both are
+  // operator-tunable via env.
+  // Memory: Apple Container's default 1 GiB VM is tight for the runner under
+  // load and yields exit 137 (guest-kernel OOM) when the host is also under
+  // memory pressure; 2 GiB gives comfortable headroom.
+  args.push('--memory', process.env.NANOCLAW_CONTAINER_MEMORY || '2G');
+  // CPU: previously uncapped, so one agent could peg every core. 4 vCPUs is
+  // ample for a single agent while leaving the 10-core host responsive under
+  // concurrency.
+  args.push('--cpus', process.env.NANOCLAW_CONTAINER_CPUS || '4');
 
   // Pass host timezone so container's local time matches the user's
   args.push('-e', `TZ=${TIMEZONE}`);
