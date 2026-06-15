@@ -21,7 +21,7 @@ import {
   findResourceOwningUrl,
   generateDavUid,
   joinDavUrl,
-  readJsonBody,
+  readJsonBodyOr400,
   sendJson,
   startICloudDavService,
 } from './dav-service-util.js';
@@ -375,7 +375,8 @@ function buildCaldavHandler({
     }
 
     if (method === 'POST' && pathname === '/events') {
-      const body = await readJsonBody<CreateEventBody>(req);
+      const body = await readJsonBodyOr400<CreateEventBody>(req, res);
+      if (!body) return 400;
       if (!body.calendar_url || !body.title || !body.start || !body.end) {
         sendJson(res, 400, {
           error: 'calendar_url, title, start, end are required',
@@ -416,7 +417,8 @@ function buildCaldavHandler({
     }
 
     if (method === 'PATCH' && pathname === '/events') {
-      const body = await readJsonBody<UpdateEventBody>(req);
+      const body = await readJsonBodyOr400<UpdateEventBody>(req, res);
+      if (!body) return 400;
       if (!body.object_url) {
         sendJson(res, 400, { error: 'object_url is required' });
         return 400;
@@ -497,7 +499,8 @@ function buildCaldavHandler({
     }
 
     if (method === 'POST' && pathname === '/reminders') {
-      const body = await readJsonBody<CreateReminderBody>(req);
+      const body = await readJsonBodyOr400<CreateReminderBody>(req, res);
+      if (!body) return 400;
       if (!body.calendar_url || !body.title) {
         sendJson(res, 400, { error: 'calendar_url and title are required' });
         return 400;
@@ -534,7 +537,8 @@ function buildCaldavHandler({
     }
 
     if (method === 'PATCH' && pathname === '/reminders') {
-      const body = await readJsonBody<UpdateReminderBody>(req);
+      const body = await readJsonBodyOr400<UpdateReminderBody>(req, res);
+      if (!body) return 400;
       if (!body.object_url) {
         sendJson(res, 400, { error: 'object_url is required' });
         return 400;
@@ -599,7 +603,8 @@ function buildCaldavHandler({
       method === 'DELETE' &&
       (pathname === '/events' || pathname === '/reminders')
     ) {
-      const body = await readJsonBody<{ object_url?: string }>(req);
+      const body = await readJsonBodyOr400<{ object_url?: string }>(req, res);
+      if (!body) return 400;
       const url = body.object_url;
       if (!url) {
         sendJson(res, 400, { error: 'object_url is required' });

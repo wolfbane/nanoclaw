@@ -16,6 +16,30 @@ import {
 
 let db: Database.Database;
 
+/**
+ * Add a column if it isn't already present. Idempotent and per-column: we probe
+ * PRAGMA table_info rather than relying on ALTER throwing "duplicate column".
+ * The old approach batched several ALTERs under one try/catch, so the first
+ * already-applied column threw and silently skipped every later statement in
+ * the block — leaving partial-migration DBs permanently missing sibling columns
+ * and hiding genuine SQL errors. Returns true if the column was just added (so
+ * callers can run a one-time backfill).
+ *
+ * `table`/`ddl` are hardcoded literals at every call site (never user input),
+ * so the interpolation here is safe.
+ */
+function addColumnIfMissing(
+  database: Database.Database,
+  table: string,
+  column: string,
+  ddl: string,
+): boolean {
+  const cols = database.pragma(`table_info(${table})`) as { name: string }[];
+  if (cols.some((c) => c.name === column)) return false;
+  database.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+  return true;
+}
+
 function createSchema(database: Database.Database): void {
   database.exec(`
     CREATE TABLE IF NOT EXISTS chats (
@@ -121,53 +145,61 @@ function createSchema(database: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_api_usage_model_ts ON api_usage(model, ts);
   `);
 
-  // Add context_mode column if it doesn't exist (migration for existing DBs)
-  try {
-    database.exec(
-      `ALTER TABLE scheduled_tasks ADD COLUMN context_mode TEXT DEFAULT 'isolated'`,
-    );
-  } catch {
-    /* column already exists */
-  }
+  // Column migrations for existing DBs. Each is independent and idempotent (see
+  // addColumnIfMissing); backfills run only when the column is freshly added.
 
-  // Add script column if it doesn't exist (migration for existing DBs)
-  try {
-    database.exec(`ALTER TABLE scheduled_tasks ADD COLUMN script TEXT`);
-  } catch {
-    /* column already exists */
-  }
+  addColumnIfMissing(
+    database,
+    'scheduled_tasks',
+    'context_mode',
+    `context_mode TEXT DEFAULT 'isolated'`,
+  );
 
-  // Add is_bot_message column if it doesn't exist (migration for existing DBs)
-  try {
-    database.exec(
-      `ALTER TABLE messages ADD COLUMN is_bot_message INTEGER DEFAULT 0`,
-    );
+  addColumnIfMissing(database, 'scheduled_tasks', 'script', `script TEXT`);
+
+  if (
+    addColumnIfMissing(
+      database,
+      'messages',
+      'is_bot_message',
+      `is_bot_message INTEGER DEFAULT 0`,
+    )
+  ) {
     // Backfill: mark existing bot messages that used the content prefix pattern
     database
       .prepare(`UPDATE messages SET is_bot_message = 1 WHERE content LIKE ?`)
       .run(`${ASSISTANT_NAME}:%`);
-  } catch {
-    /* column already exists */
   }
 
-  // Add is_main column if it doesn't exist (migration for existing DBs)
-  try {
-    database.exec(
-      `ALTER TABLE registered_groups ADD COLUMN is_main INTEGER DEFAULT 0`,
-    );
+  if (
+    addColumnIfMissing(
+      database,
+      'registered_groups',
+      'is_main',
+      `is_main INTEGER DEFAULT 0`,
+    )
+  ) {
     // Backfill: existing rows with folder = 'main' are the main group
     database.exec(
       `UPDATE registered_groups SET is_main = 1 WHERE folder = 'main'`,
     );
-  } catch {
-    /* column already exists */
   }
 
-  // Add channel and is_group columns if they don't exist (migration for existing DBs)
-  try {
-    database.exec(`ALTER TABLE chats ADD COLUMN channel TEXT`);
-    database.exec(`ALTER TABLE chats ADD COLUMN is_group INTEGER DEFAULT 0`);
-    // Backfill from JID patterns
+  // channel + is_group are siblings; if either is freshly added, (re)run the
+  // JID-pattern backfill so a partially-migrated DB gets repaired consistently.
+  const addedChannel = addColumnIfMissing(
+    database,
+    'chats',
+    'channel',
+    `channel TEXT`,
+  );
+  const addedIsGroup = addColumnIfMissing(
+    database,
+    'chats',
+    'is_group',
+    `is_group INTEGER DEFAULT 0`,
+  );
+  if (addedChannel || addedIsGroup) {
     database.exec(
       `UPDATE chats SET channel = 'whatsapp', is_group = 1 WHERE jid LIKE '%@g.us'`,
     );
@@ -180,36 +212,45 @@ function createSchema(database: Database.Database): void {
     database.exec(
       `UPDATE chats SET channel = 'telegram', is_group = 0 WHERE jid LIKE 'tg:%'`,
     );
-  } catch {
-    /* columns already exist */
   }
 
-  // Add reply context columns if they don't exist (migration for existing DBs)
-  try {
-    database.exec(`ALTER TABLE messages ADD COLUMN reply_to_message_id TEXT`);
-    database.exec(
-      `ALTER TABLE messages ADD COLUMN reply_to_message_content TEXT`,
-    );
-    database.exec(`ALTER TABLE messages ADD COLUMN reply_to_sender_name TEXT`);
-  } catch {
-    /* columns already exist */
-  }
+  // Reply context columns
+  addColumnIfMissing(
+    database,
+    'messages',
+    'reply_to_message_id',
+    `reply_to_message_id TEXT`,
+  );
+  addColumnIfMissing(
+    database,
+    'messages',
+    'reply_to_message_content',
+    `reply_to_message_content TEXT`,
+  );
+  addColumnIfMissing(
+    database,
+    'messages',
+    'reply_to_sender_name',
+    `reply_to_sender_name TEXT`,
+  );
 
-  // Add provider + shadow-cost columns to api_usage (migration for existing DBs).
-  // `provider` distinguishes proxy-tracked Claude rows ('anthropic') from codex
-  // rows. Codex runs on a flat ChatGPT subscription (cost_usd = 0), so
-  // `shadow_cost_usd` records what the same token counts would have cost on
-  // Claude — the apples-to-apples number for the A/B test.
-  try {
-    database.exec(
-      `ALTER TABLE api_usage ADD COLUMN provider TEXT DEFAULT 'anthropic'`,
-    );
-    database.exec(
-      `ALTER TABLE api_usage ADD COLUMN shadow_cost_usd REAL DEFAULT 0`,
-    );
-  } catch {
-    /* columns already exist */
-  }
+  // provider + shadow-cost columns on api_usage. `provider` distinguishes
+  // proxy-tracked Claude rows ('anthropic') from codex rows. Codex runs on a
+  // flat ChatGPT subscription (cost_usd = 0), so `shadow_cost_usd` records what
+  // the same token counts would have cost on Claude — the apples-to-apples
+  // number for the A/B test.
+  addColumnIfMissing(
+    database,
+    'api_usage',
+    'provider',
+    `provider TEXT DEFAULT 'anthropic'`,
+  );
+  addColumnIfMissing(
+    database,
+    'api_usage',
+    'shadow_cost_usd',
+    `shadow_cost_usd REAL DEFAULT 0`,
+  );
 }
 
 export function initDatabase(): void {

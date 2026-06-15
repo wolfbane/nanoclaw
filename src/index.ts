@@ -322,16 +322,16 @@ function recoverPendingMessages(): void {
   }
 }
 
-function ensureContainerSystemRunning(): void {
+async function ensureContainerSystemRunning(): Promise<void> {
   ensureContainerRuntimeRunning();
-  cleanupOrphans();
+  await cleanupOrphans();
 }
 
 async function main(): Promise<void> {
   // Refuse to start a second instance for this data dir (prevents the
   // split-brain that strands containers / double-runs tasks).
   acquireSingletonLock();
-  ensureContainerSystemRunning();
+  await ensureContainerSystemRunning();
   initDatabase();
   logger.info('Database initialized');
   loadState();

@@ -212,10 +212,16 @@ export function stopRemoteControl():
   }
 
   const { pid } = activeSession;
+  // The child was spawned detached (its own process group), so signal the whole
+  // group (-pid) to also reap any grandchildren; fall back to the bare pid.
   try {
-    process.kill(pid, 'SIGTERM');
+    process.kill(-pid, 'SIGTERM');
   } catch {
-    // already dead
+    try {
+      process.kill(pid, 'SIGTERM');
+    } catch {
+      // already dead
+    }
   }
   activeSession = null;
   clearState();

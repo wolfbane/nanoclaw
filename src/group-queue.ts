@@ -351,26 +351,40 @@ export class GroupQueue {
     }
   }
 
-  async shutdown(_gracePeriodMs: number): Promise<void> {
+  async shutdown(gracePeriodMs: number): Promise<void> {
     this.shuttingDown = true;
 
-    // Count active containers but don't kill them — they'll finish on their own
-    // via idle timeout or container timeout. The --rm flag cleans them up on exit.
-    // This prevents WhatsApp reconnection restarts from killing working agents.
-    const activeContainers: string[] = [];
+    // Stop pending retries from re-enqueuing work mid-shutdown.
     for (const [_jid, state] of this.groups) {
       if (state.retryTimer) {
         clearTimeout(state.retryTimer);
         state.retryTimer = null;
       }
+    }
+
+    // Give in-flight runs a bounded window to finish so their host-side
+    // finalization (writing results back, recording usage) completes before the
+    // process exits — rather than returning instantly and abandoning it. We do
+    // NOT kill containers: they're detached and --rm cleans them up, so a
+    // channel-reconnection restart never aborts a working agent. drainGroup()
+    // already no-ops while shuttingDown, so activeCount only falls here.
+    const deadline = Date.now() + Math.max(0, gracePeriodMs);
+    while (this.activeCount > 0 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 200));
+    }
+
+    const detachedContainers: string[] = [];
+    for (const [_jid, state] of this.groups) {
       if (state.process && !state.process.killed && state.containerName) {
-        activeContainers.push(state.containerName);
+        detachedContainers.push(state.containerName);
       }
     }
 
     logger.info(
-      { activeCount: this.activeCount, detachedContainers: activeContainers },
-      'GroupQueue shutting down (containers detached, not killed)',
+      { activeCount: this.activeCount, detachedContainers },
+      this.activeCount > 0
+        ? 'GroupQueue shutdown grace period elapsed (containers detached, not killed)'
+        : 'GroupQueue shut down cleanly',
     );
   }
 }

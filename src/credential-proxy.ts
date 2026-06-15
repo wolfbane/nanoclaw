@@ -13,11 +13,19 @@
 import { createServer, Server } from 'http';
 import { request as httpsRequest } from 'https';
 import { request as httpRequest, RequestOptions } from 'http';
-import { brotliDecompressSync, gunzipSync, inflateSync } from 'zlib';
+import { promisify } from 'util';
+import { brotliDecompress, gunzip, inflate } from 'zlib';
 
 import { recordApiUsage } from './db.js';
 import { readEnvFile } from './env.js';
 import { logger } from './logger.js';
+
+// Async (libuv-threadpool) decompression for usage parsing — keeps the event
+// loop free instead of blocking it on a synchronous decode of bodies up to
+// USAGE_BUFFER_CAP, which would stall every other in-flight proxied request.
+const gunzipAsync = promisify(gunzip);
+const brotliDecompressAsync = promisify(brotliDecompress);
+const inflateAsync = promisify(inflate);
 
 // Cap the per-request buffer used only for usage parsing (the response body
 // always streams straight through to the caller regardless). Past this, skip
@@ -255,18 +263,20 @@ export function startCredentialProxy(
             upRes.on('end', () => {
               res.end();
               if (!trackUsage || usageBufferTruncated) return;
-              setImmediate(() => {
+              setImmediate(async () => {
                 try {
                   const raw = Buffer.concat(respChunks);
                   let decoded: Buffer = raw;
                   try {
-                    if (encoding === 'gzip') decoded = gunzipSync(raw);
+                    if (encoding === 'gzip') decoded = await gunzipAsync(raw);
                     else if (encoding === 'br')
-                      decoded = brotliDecompressSync(raw);
-                    else if (encoding === 'deflate') decoded = inflateSync(raw);
+                      decoded = await brotliDecompressAsync(raw);
+                    else if (encoding === 'deflate')
+                      decoded = await inflateAsync(raw);
                   } catch {
-                    // Streaming gzip may not be syncDecodable; fall back to raw
-                    // (parseUsage will return null, request still recorded)
+                    // A partial/streamed body may not decode as a single block;
+                    // fall back to raw (parseUsage returns null, request still
+                    // recorded).
                   }
                   const respBody = decoded.toString('utf8');
                   const parsed = parseUsage(respBody, isSse);

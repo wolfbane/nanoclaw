@@ -71,20 +71,30 @@ export async function readJsonBody<T>(req: IncomingMessage): Promise<T> {
 }
 
 // Wraps readJsonBody so a malformed body becomes a 400 (with a clear error),
-// not a 500 from the generic handler error path. Caller returns 400 when
-// this returns null.
+// not a 500 from the generic handler error path. Also rejects any body that
+// isn't a JSON object — null, arrays, and primitives — so callers can treat a
+// non-null return as a property bag without `body.x` throwing on null or
+// silently reading undefined off a primitive. (An empty body is still `{}`, so
+// "field required" validation downstream is unchanged.) Caller returns 400 when
+// this returns null; a non-null return guarantees a 400 was NOT sent.
 export async function readJsonBodyOr400<T>(
   req: IncomingMessage,
   res: ServerResponse,
 ): Promise<T | null> {
+  let parsed: unknown;
   try {
-    return await readJsonBody<T>(req);
+    parsed = await readJsonBody<unknown>(req);
   } catch (err) {
     sendJson(res, 400, {
       error: `invalid JSON body: ${err instanceof Error ? err.message : String(err)}`,
     });
     return null;
   }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    sendJson(res, 400, { error: 'request body must be a JSON object' });
+    return null;
+  }
+  return parsed as T;
 }
 
 // Uppercase UUID used as the iCal/vCard UID and the filename of the new

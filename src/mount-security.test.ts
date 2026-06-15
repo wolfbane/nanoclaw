@@ -97,6 +97,27 @@ describe('mount-security validateMount', () => {
     expect(r.reason).toMatch(/blocked pattern/);
   });
 
+  it('rejects underscore/extension secret variants (id_rsa_backup, id_rsa.pub, aws_credentials)', () => {
+    for (const name of ['id_rsa_backup', 'id_rsa.pub', 'aws_credentials']) {
+      const r = validateMount(
+        { hostPath: `/data/projects/${name}`, containerPath: 'x' },
+        true,
+      );
+      expect(r.allowed, name).toBe(false);
+      expect(r.reason, name).toMatch(/blocked pattern/);
+    }
+  });
+
+  it('does NOT over-block legitimate paths (.environment, credentials-docs)', () => {
+    for (const name of ['.environment', 'credentials-docs']) {
+      const r = validateMount(
+        { hostPath: `/data/projects/${name}`, containerPath: 'x' },
+        true,
+      );
+      expect(r.allowed, name).toBe(true);
+    }
+  });
+
   it('allows a main-group read-write mount under an allowed root', () => {
     const r = validateMount(
       {

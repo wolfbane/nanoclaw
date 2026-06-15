@@ -2,14 +2,17 @@
  * Container runtime abstraction for NanoClaw.
  * All runtime-specific logic lives here so swapping runtimes means changing one file.
  */
-import { execSync } from 'child_process';
+import { execFile, execSync } from 'child_process';
 import os from 'os';
+import { promisify } from 'util';
 
 import { logger } from './logger.js';
 import { readEnvFile } from './env.js';
 
 /** The container runtime binary name. */
 export const CONTAINER_RUNTIME_BIN = 'container';
+
+const execFileAsync = promisify(execFile);
 
 /**
  * IP address containers use to reach the host machine.
@@ -62,12 +65,17 @@ export function readonlyMountArgs(
   ];
 }
 
-/** Stop a container by name. Uses execFileSync to avoid shell injection. */
-export function stopContainer(name: string): void {
+/**
+ * Stop a container by name. Uses execFile (no shell) to avoid injection, and
+ * runs async so a slow VM stop doesn't block the host event loop — the timeout
+ * killer fires this on the shared loop, so a synchronous stop would freeze all
+ * other groups, IPC polling, and message handling for the stop's duration.
+ */
+export async function stopContainer(name: string): Promise<void> {
   if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(name)) {
     throw new Error(`Invalid container name: ${name}`);
   }
-  execSync(`${CONTAINER_RUNTIME_BIN} stop ${name}`, { stdio: 'pipe' });
+  await execFileAsync(CONTAINER_RUNTIME_BIN, ['stop', name]);
 }
 
 /** Ensure the container runtime is running, starting it if needed. */
@@ -117,7 +125,7 @@ export function ensureContainerRuntimeRunning(): void {
 }
 
 /** Kill orphaned NanoClaw containers from previous runs. */
-export function cleanupOrphans(): void {
+export async function cleanupOrphans(): Promise<void> {
   try {
     const output = execSync(`${CONTAINER_RUNTIME_BIN} ls --format json`, {
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -131,13 +139,13 @@ export function cleanupOrphans(): void {
           c.status === 'running' && c.configuration.id.startsWith('nanoclaw-'),
       )
       .map((c) => c.configuration.id);
-    for (const name of orphans) {
-      try {
-        stopContainer(name);
-      } catch {
-        /* already stopped */
-      }
-    }
+    await Promise.all(
+      orphans.map((name) =>
+        stopContainer(name).catch(() => {
+          /* already stopped */
+        }),
+      ),
+    );
     if (orphans.length > 0) {
       logger.info(
         { count: orphans.length, names: orphans },

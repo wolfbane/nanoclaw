@@ -222,6 +222,47 @@ describe('processIpcMessageFile — ack on unauthorized send', () => {
   });
 });
 
+describe('processIpcMessageFile — ack on malformed-but-parseable message', () => {
+  it('acks an error (not a silent drop) when required fields are missing', async () => {
+    const sourceGroup = 'whatsapp_main';
+    const requestId = 'req-malformed';
+    // Valid JSON, but missing text/chatJid → matches no handler branch.
+    const { messagesDir, file } = writeRequestFile(sourceGroup, requestId, {
+      type: 'message',
+      requestId,
+    });
+
+    let sendCalled = false;
+    const deps = makeDeps({
+      sendMessage: async () => {
+        sendCalled = true;
+      },
+      registeredGroups: () => ({ 'main@g.us': MAIN_GROUP }),
+    });
+
+    await processIpcMessageFile(
+      ipcBaseDir,
+      messagesDir,
+      file,
+      sourceGroup,
+      /* isMain */ true,
+      { 'main@g.us': MAIN_GROUP },
+      deps,
+    );
+
+    expect(sendCalled).toBe(false);
+
+    // The agent gets an error ack rather than hanging on a vanished request.
+    const ack = readAck(sourceGroup, requestId);
+    expect(ack.status).toBe('error');
+    expect(ack.error).toMatch(/Malformed/);
+
+    // Request file removed; this is a handled drop, not an errors/ quarantine.
+    expect(fs.existsSync(path.join(messagesDir, file))).toBe(false);
+    expect(fs.existsSync(path.join(ipcBaseDir, 'errors'))).toBe(false);
+  });
+});
+
 describe('processIpcMessageFile — requestId fallback', () => {
   it('falls back to filename stem when payload omits requestId', async () => {
     const sourceGroup = 'whatsapp_main';

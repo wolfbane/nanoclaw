@@ -167,6 +167,21 @@ export async function processIpcMessageFile(
           'Unauthorized: this group is not permitted to send to that chat.',
         );
       }
+    } else {
+      // Well-formed JSON but not a valid send_message request (unknown type or
+      // missing chatJid/text). Without an ack here the agent would hang waiting
+      // on a request we're about to silently delete, so ack the error first.
+      logger.warn(
+        { file, sourceGroup, type: data.type },
+        'Unrecognized or incomplete IPC message — acking error and dropping',
+      );
+      writeIpcAck(
+        ipcBaseDir,
+        sourceGroup,
+        requestId,
+        'error',
+        'Malformed IPC message: expected { type: "message", chatJid, text }.',
+      );
     }
     fs.unlinkSync(filePath);
   } catch (err) {

@@ -139,11 +139,22 @@ function getRealPath(p: string): string | null {
   }
 }
 
+// Characters that delimit a "token" inside a path component for blocked-pattern
+// matching. A pattern matches only when it sits on a boundary (component
+// start/end, `.`, or `_`). `-` is deliberately NOT a boundary so legitimate
+// paths like `/credentials-docs/` stay allowed.
+const SEGMENT_BOUNDARY = new Set(['.', '_']);
+
 /**
- * Match a path component exactly, or as a base name followed by an
- * extension (e.g. `id_rsa` matches `id_rsa.pub`). Avoids the substring
- * over-blocking that rejected legitimate paths like `/.environment/` or
- * `/credentials-docs/` while still catching keypair variants.
+ * Match a blocked pattern against a path component as a boundary-delimited
+ * token. This catches secret-file variants the old prefix-only match missed —
+ * `id_rsa.pub`, `id_rsa_backup`, `prod_id_rsa`, `aws_credentials` — while still
+ * NOT over-blocking legitimate paths: `/.environment/` (`.env` is followed by
+ * `i`, not a boundary) and `/credentials-docs/` (`-` is not a boundary).
+ *
+ * This is a strict superset of the previous behavior (exact match and
+ * `pattern.` prefix are both boundary matches), so nothing that was blocked
+ * before becomes allowed.
  */
 function matchesBlockedPattern(
   realPath: string,
@@ -151,9 +162,20 @@ function matchesBlockedPattern(
 ): string | null {
   const pathParts = realPath.split(path.sep);
   for (const pattern of blockedPatterns) {
-    const prefix = pattern + '.';
+    if (!pattern) continue;
     for (const part of pathParts) {
-      if (part === pattern || part.startsWith(prefix)) return pattern;
+      let from = 0;
+      let idx = part.indexOf(pattern, from);
+      while (idx !== -1) {
+        const before = idx === 0 ? '' : part[idx - 1];
+        const afterIdx = idx + pattern.length;
+        const after = afterIdx >= part.length ? '' : part[afterIdx];
+        const beforeOk = before === '' || SEGMENT_BOUNDARY.has(before);
+        const afterOk = after === '' || SEGMENT_BOUNDARY.has(after);
+        if (beforeOk && afterOk) return pattern;
+        from = idx + 1;
+        idx = part.indexOf(pattern, from);
+      }
     }
   }
   return null;

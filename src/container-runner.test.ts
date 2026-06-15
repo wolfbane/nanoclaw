@@ -59,7 +59,8 @@ vi.mock('./container-runtime.js', () => ({
   CONTAINER_HOST_GATEWAY: '192.168.64.1',
   hostGatewayArgs: () => [],
   readonlyMountArgs: (h: string, c: string) => ['-v', `${h}:${c}:ro`],
-  stopContainer: vi.fn(),
+  // stopContainer is async now; the timeout handler awaits its rejection path.
+  stopContainer: vi.fn(() => Promise.resolve()),
 }));
 
 // Mock credential-proxy
