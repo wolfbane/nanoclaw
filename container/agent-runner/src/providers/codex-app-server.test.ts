@@ -1,6 +1,10 @@
-import { describe, it, expect } from 'vitest';
+import { afterEach, describe, it, expect } from 'vitest';
 
-import { STALE_THREAD_RE, tomlBasicString } from './codex-app-server.js';
+import {
+  STALE_THREAD_RE,
+  createCodexConfigOverrides,
+  tomlBasicString,
+} from './codex-app-server.js';
 
 describe('tomlBasicString', () => {
   it('leaves safe strings unchanged inside quotes', () => {
@@ -58,6 +62,43 @@ describe('STALE_THREAD_RE', () => {
     );
     expect(
       STALE_THREAD_RE.test('rate limit exceeded for thread_id 019ec729'),
+    ).toBe(false);
+  });
+});
+
+describe('createCodexConfigOverrides — reasoning effort (07l)', () => {
+  afterEach(() => {
+    delete process.env.CODEX_REASONING_EFFORT;
+  });
+
+  it('omits model_reasoning_effort when CODEX_REASONING_EFFORT is unset', () => {
+    const ov = createCodexConfigOverrides();
+    expect(ov).toContain('features.use_linux_sandbox_bwrap=false');
+    expect(ov.some((o) => o.startsWith('model_reasoning_effort='))).toBe(false);
+  });
+
+  it('passes a valid effort (case/space-insensitive)', () => {
+    process.env.CODEX_REASONING_EFFORT = '  HIGH ';
+    expect(createCodexConfigOverrides()).toContain(
+      'model_reasoning_effort=high',
+    );
+  });
+
+  it('accepts every documented level', () => {
+    for (const lvl of ['minimal', 'low', 'medium', 'high', 'xhigh']) {
+      process.env.CODEX_REASONING_EFFORT = lvl;
+      expect(createCodexConfigOverrides()).toContain(
+        `model_reasoning_effort=${lvl}`,
+      );
+    }
+  });
+
+  it('ignores an invalid effort rather than passing a bad override', () => {
+    process.env.CODEX_REASONING_EFFORT = 'turbo';
+    expect(
+      createCodexConfigOverrides().some((o) =>
+        o.startsWith('model_reasoning_effort='),
+      ),
     ).toBe(false);
   });
 });

@@ -389,6 +389,32 @@ export function writeCodexMcpConfigToml(servers: Record<string, CodexMcpServer>)
   log(`Wrote MCP config.toml (${Object.keys(servers).length} server(s))`);
 }
 
+/** Reasoning-effort levels Codex accepts (config key `model_reasoning_effort`). */
+const VALID_REASONING_EFFORTS = new Set([
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+]);
+
 export function createCodexConfigOverrides(): string[] {
-  return ['features.use_linux_sandbox_bwrap=false'];
+  const overrides = ['features.use_linux_sandbox_bwrap=false'];
+  // Optional reasoning-effort knob (07l): higher effort = better quality, more
+  // tokens/latency and faster subscription rate-limit burn. Operator-set per
+  // group via container_config.env (CODEX_REASONING_EFFORT); unset → Codex's
+  // own default. Codex coerces a level the chosen model doesn't support to the
+  // nearest, so any valid value is safe.
+  const effort = process.env.CODEX_REASONING_EFFORT?.trim().toLowerCase();
+  if (effort) {
+    if (VALID_REASONING_EFFORTS.has(effort)) {
+      overrides.push(`model_reasoning_effort=${effort}`);
+    } else {
+      log(
+        `Ignoring invalid CODEX_REASONING_EFFORT="${effort}" ` +
+          '(expected one of: minimal, low, medium, high, xhigh)',
+      );
+    }
+  }
+  return overrides;
 }
