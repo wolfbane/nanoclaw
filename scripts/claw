@@ -20,6 +20,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -66,7 +67,31 @@ SECRET_KEYS = [
     "OLLAMA_HOST",
 ]
 
+# container_config.env keys a group must NOT override — mirrors
+# RESERVED_CONTAINER_ENV in src/container-runner.ts (credential/service routing
+# + privilege boundary). claw sets these itself; the group's env can't clobber.
+RESERVED_CONTAINER_ENV = {
+    "ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN",
+    "NANOCLAW_CALDAV_SERVICE_URL", "NANOCLAW_CARDDAV_SERVICE_URL",
+    "CENTS_HOME", "HOME", "RUN_UID", "RUN_GID", "TZ",
+}
+
 # ── Helpers ──────────────────────────────────────────────────────────────────
+
+def setup_codex_home(codex_home: Path) -> Path:
+    """Ensure a codex auth dir exists (auth.json seeded from host ~/.codex), to
+    mount at /home/node/.codex. Mirrors the daemon's codex provider. Uses a
+    DEDICATED dir (not the live group's session codex/) so it can't race the
+    daemon over codex's single-use refresh tokens."""
+    codex_home.mkdir(parents=True, exist_ok=True)
+    dst = codex_home / "auth.json"
+    if not dst.exists():
+        host_auth = Path(os.environ.get("HOME", "~")).expanduser() / ".codex" / "auth.json"
+        if not host_auth.exists():
+            sys.exit("error: no codex auth at ~/.codex/auth.json — run `codex login` first.")
+        shutil.copy2(host_auth, dst)
+        dbg(f"seeded codex auth: {host_auth} -> {dst}")
+    return codex_home
 
 def detect_runtime(preference: str | None) -> str:
     if preference:
@@ -179,7 +204,9 @@ def build_mounts(folder: str, is_main: bool, container_config: dict | None = Non
 def run_container(runtime: str, image: str, payload: dict,
                   folder: str | None = None, is_main: bool = False,
                   timeout: int = 300, env_file: Path | None = None,
-                  container_config: dict | None = None) -> None:
+                  container_config: dict | None = None,
+                  cfg_env: dict | None = None,
+                  codex_home: Path | None = None) -> None:
     cmd = [runtime, "run", "-i", "--rm"]
 
     # Inject credentials from .env as env vars
@@ -216,6 +243,22 @@ def run_container(runtime: str, image: str, payload: dict,
     cmd += ["-e", f"NANOCLAW_CALDAV_SERVICE_URL={caldav_url}"]
     carddav_url = os.environ.get("NANOCLAW_CARDDAV_SERVICE_URL", "http://192.168.64.1:3003")
     cmd += ["-e", f"NANOCLAW_CARDDAV_SERVICE_URL={carddav_url}"]
+
+    # Per-group container_config.env passthrough (provider selection +
+    # provider-specific config, e.g. AGENT_PROVIDER / CODEX_MODEL). Reserved
+    # keys claw sets itself are skipped — mirrors container-runner.ts so claw
+    # faithfully runs the group's configured provider (it ran Claude-only before).
+    cfg_env = cfg_env or {}
+    for k, v in cfg_env.items():
+        if k in RESERVED_CONTAINER_ENV:
+            dbg(f"skipping reserved container_config.env key: {k}")
+            continue
+        cmd += ["-e", f"{k}={v}"]
+
+    # Codex provider reads auth + MCP config from ~/.codex; mount the prepared
+    # auth dir at /home/node/.codex (the daemon does the equivalent).
+    if cfg_env.get("AGENT_PROVIDER") == "codex" and codex_home is not None:
+        cmd += ["-v", f"{codex_home}:/home/node/.codex"]
 
     if folder:
         for host, container, readonly in build_mounts(folder, is_main, container_config):
@@ -342,6 +385,11 @@ def main():
     parser.add_argument("-g", "--group", help="Group name or folder (fuzzy match)")
     parser.add_argument("-j", "--jid", help="Chat JID (exact)")
     parser.add_argument("-s", "--session", help="Session ID to resume")
+    parser.add_argument("-m", "--model",
+                        help="Override the model (sets CODEX_MODEL for codex groups, e.g. gpt-5.5)")
+    parser.add_argument("--codex-home", metavar="DIR",
+                        help="Codex auth dir to mount at /home/node/.codex "
+                             "(default: a dedicated dir under data/eval; seeded from ~/.codex)")
     parser.add_argument("-p", "--pipe", action="store_true",
                         help="Read prompt from stdin (can be combined with a prompt arg as prefix)")
     parser.add_argument("--runtime", choices=["container"],
@@ -435,11 +483,30 @@ def main():
         payload["sessionId"] = args.session
         payload["resumeAt"] = "latest"
 
-    print(f"[{group_name or jid}] running via {runtime}...", file=sys.stderr)
+    # Effective container env: the group's container_config.env, with -m
+    # overriding CODEX_MODEL. This is the sole gate to the provider (codex etc.).
+    cfg_env = dict(container_config.get("env", {}) or {})
+    if args.model:
+        cfg_env["CODEX_MODEL"] = args.model
+
+    # For codex, prepare an auth dir to mount. Default to a dedicated eval dir
+    # (seeded from ~/.codex) so we never race the live group's session auth.
+    codex_home = None
+    if cfg_env.get("AGENT_PROVIDER") == "codex":
+        codex_home = setup_codex_home(
+            Path(args.codex_home).expanduser() if args.codex_home
+            else NANOCLAW_DIR / "data" / "eval" / "codex-home"
+        )
+
+    print(f"[{group_name or jid}] running via {runtime} "
+          f"(provider={cfg_env.get('AGENT_PROVIDER', 'claude')}"
+          f"{', model=' + cfg_env['CODEX_MODEL'] if cfg_env.get('CODEX_MODEL') else ''})...",
+          file=sys.stderr)
     run_container(runtime, args.image, payload,
                   folder=group_folder, is_main=is_main,
                   timeout=args.timeout,
-                  container_config=container_config)
+                  container_config=container_config,
+                  cfg_env=cfg_env, codex_home=codex_home)
 
 
 if __name__ == "__main__":

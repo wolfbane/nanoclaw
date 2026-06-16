@@ -241,7 +241,9 @@ describe('markdownToReadablePlain — clean fallback (no raw markers, identifier
     expect(markdownToReadablePlain('this is _italic_ here')).toBe(
       'this is italic here',
     );
-    expect(markdownToReadablePlain('run `npm test` now')).toBe('run npm test now');
+    expect(markdownToReadablePlain('run `npm test` now')).toBe(
+      'run npm test now',
+    );
     expect(markdownToReadablePlain('see [docs](https://x.com)')).toBe(
       'see docs (https://x.com)',
     );
@@ -249,9 +251,9 @@ describe('markdownToReadablePlain — clean fallback (no raw markers, identifier
   });
 
   it('NEVER corrupts identifiers (intra-word underscores) — the whole point', () => {
-    expect(markdownToReadablePlain('Set CLAUDE_CODE_DISABLE_AUTO_MEMORY=1')).toBe(
-      'Set CLAUDE_CODE_DISABLE_AUTO_MEMORY=1',
-    );
+    expect(
+      markdownToReadablePlain('Set CLAUDE_CODE_DISABLE_AUTO_MEMORY=1'),
+    ).toBe('Set CLAUDE_CODE_DISABLE_AUTO_MEMORY=1');
     expect(markdownToReadablePlain('a_b and c_d_e')).toBe('a_b and c_d_e');
     // unpaired asterisk (e.g. multiplication) is left intact
     expect(markdownToReadablePlain('2 * 3 = 6')).toBe('2 * 3 = 6');
