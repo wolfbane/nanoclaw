@@ -82,6 +82,7 @@ import {
   TelegramChannel,
   TelegramChannelOpts,
   fenceMarkdownTables,
+  markdownToReadablePlain,
   toTelegramMarkdownV2,
 } from './telegram.js';
 
@@ -229,6 +230,38 @@ describe('MarkdownV2 conversion — table handling (delivery fix)', () => {
     expect(out).not.toMatch(/\\\\_/);
     expect(out).toContain('```');
     expect(out).toContain('*important*'); // bold preserved as MarkdownV2
+  });
+});
+
+describe('markdownToReadablePlain — clean fallback (no raw markers, identifier-safe)', () => {
+  it('strips emphasis/code/links to readable text', () => {
+    expect(markdownToReadablePlain('*Bold* and **strong**')).toBe(
+      'Bold and strong',
+    );
+    expect(markdownToReadablePlain('this is _italic_ here')).toBe(
+      'this is italic here',
+    );
+    expect(markdownToReadablePlain('run `npm test` now')).toBe('run npm test now');
+    expect(markdownToReadablePlain('see [docs](https://x.com)')).toBe(
+      'see docs (https://x.com)',
+    );
+    expect(markdownToReadablePlain('```js\nconst x=1\n```')).toBe('const x=1');
+  });
+
+  it('NEVER corrupts identifiers (intra-word underscores) — the whole point', () => {
+    expect(markdownToReadablePlain('Set CLAUDE_CODE_DISABLE_AUTO_MEMORY=1')).toBe(
+      'Set CLAUDE_CODE_DISABLE_AUTO_MEMORY=1',
+    );
+    expect(markdownToReadablePlain('a_b and c_d_e')).toBe('a_b and c_d_e');
+    // unpaired asterisk (e.g. multiplication) is left intact
+    expect(markdownToReadablePlain('2 * 3 = 6')).toBe('2 * 3 = 6');
+  });
+
+  it('normalizes bullets and leaves no raw markdown noise on the test block', () => {
+    const out = markdownToReadablePlain('- one\n* two\n`code`');
+    expect(out).toContain('• one');
+    expect(out).toContain('• two');
+    expect(out).not.toContain('`');
   });
 });
 

@@ -101,6 +101,33 @@ export function toTelegramMarkdownV2(text: string): string {
 }
 
 /**
+ * Render Markdown to clean, readable PLAIN text for the send fallback. When
+ * telegramify produces invalid MarkdownV2 (nested emphasis, a backtick inside a
+ * code fence, etc.) Telegram rejects it; previously we then sent the *raw*
+ * Markdown, so the user saw literal `*bold*` / backticks. This strips the noise
+ * markers instead — but is word-boundary aware so it never corrupts identifiers
+ * like `CLAUDE_CODE_DISABLE_AUTO_MEMORY` or `a_b_c` (intra-word underscores and
+ * unpaired `*` are left alone). No parse_mode, so it can never re-trigger a
+ * parse error.
+ */
+export function markdownToReadablePlain(text: string): string {
+  return text
+    .replace(/^[ \t]*```[^\n]*$/gm, '') // code-fence lines
+    .replace(/`([^`\n]+)`/g, '$1')
+    .replace(/`/g, '') // inline code + stray backticks
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1') // images → alt
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1 ($2)') // links → text (url)
+    .replace(/^[ \t]*#{1,6}[ \t]+/gm, '') // headings
+    .replace(/^[ \t]*>[ \t]?/gm, '') // blockquotes
+    .replace(/(^|[\s(])\*\*([^*\n]+)\*\*(?=[\s).,!?:;]|$)/g, '$1$2') // **bold**
+    .replace(/(^|[\s(])\*([^*\n]+)\*(?=[\s).,!?:;]|$)/g, '$1$2') // *italic*
+    .replace(/(^|[\s(])_([^_\n]+)_(?=[\s).,!?:;]|$)/g, '$1$2') // _italic_ (boundary)
+    .replace(/^[ \t]*[-*][ \t]+/gm, '• ') // bullets → •
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+/**
  * Split source text into pieces whose *converted* MarkdownV2 length stays within
  * Telegram's 4096-char limit. Splits only on newlines so Markdown entities are
  * never cut mid-delimiter; a single line too long even alone is hard-split.
@@ -168,7 +195,13 @@ async function sendTelegramMessage(
       },
       'Telegram MarkdownV2 send failed, falling back to plain text',
     );
-    const sent = await api.sendMessage(chatId, text, options);
+    // Strip markdown to readable plain (not the raw original) so a parse failure
+    // degrades to clean text, never literal `*bold*` / backticks.
+    const sent = await api.sendMessage(
+      chatId,
+      markdownToReadablePlain(text),
+      options,
+    );
     return { messageId: sent.message_id, parseMode: 'plain' };
   }
 }
