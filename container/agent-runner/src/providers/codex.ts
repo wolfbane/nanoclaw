@@ -271,30 +271,59 @@ function pickNum(
   return undefined;
 }
 
-/**
- * Extract token usage from a codex `thread/tokenUsage/updated` payload.
- *
- * Shape (codex 0.139): `params.tokenUsage.{last,total}` =
- *   { inputTokens, cachedInputTokens, outputTokens, reasoningOutputTokens,
- *     totalTokens }
- * `inputTokens` is inclusive of `cachedInputTokens`; `totalTokens =
- * inputTokens + outputTokens`. We prefer `.last` (this turn) and fall back to
- * `.total` (cumulative). Field-name fallbacks guard future drift; `raw` keeps
- * the object so the host can recover anything we don't model.
- */
-function extractCodexUsage(
-  params: Record<string, unknown>,
-): ProviderUsage | undefined {
-  const tu = params.tokenUsage as
-    | { last?: Record<string, unknown>; total?: Record<string, unknown> }
-    | undefined;
-  const u = tu?.last ?? tu?.total;
-  if (!u || typeof u !== 'object') return undefined;
+function codexUsageNums(o: Record<string, unknown>): {
+  inputTokens: number;
+  outputTokens: number;
+  cachedInputTokens: number;
+} {
   return {
-    inputTokens: pickNum(u, ['inputTokens', 'input_tokens']),
-    outputTokens: pickNum(u, ['outputTokens', 'output_tokens']),
-    cachedInputTokens: pickNum(u, ['cachedInputTokens', 'cached_input_tokens']),
-    raw: u,
+    inputTokens: pickNum(o, ['inputTokens', 'input_tokens']) ?? 0,
+    outputTokens: pickNum(o, ['outputTokens', 'output_tokens']) ?? 0,
+    cachedInputTokens:
+      pickNum(o, ['cachedInputTokens', 'cached_input_tokens']) ?? 0,
+  };
+}
+
+/**
+ * Per-turn token usage from the stream of codex `thread/tokenUsage/updated`
+ * payloads seen during one turn.
+ *
+ * Shape (codex 0.139): each event has `{ total, last }`, each
+ * { inputTokens (incl. cachedInputTokens), outputTokens (incl.
+ * reasoningOutputTokens), totalTokens }. Empirically `.total` is CUMULATIVE for
+ * the whole thread and grows across the turn's tool-call steps (e.g. output
+ * 287→700→…→2088 over 7 events); `.last` is just the most recent step. We
+ * previously kept `.last`, which recorded only the final step — a ~6× output
+ * undercount on multi-step turns. Instead take the turn delta:
+ *   (final event's .total) − baseline,  baseline = first event's (.total − .last)
+ * The baseline strips usage accrued by EARLIER turns in a resumed thread, so the
+ * result is this turn's usage whether the session is fresh or resumed.
+ */
+export function codexTurnUsageDelta(
+  events: Array<{ total?: unknown; last?: unknown } | undefined>,
+): ProviderUsage | undefined {
+  const withTotal = events.filter(
+    (e): e is { total: Record<string, unknown>; last?: unknown } =>
+      !!e && !!e.total && typeof e.total === 'object',
+  );
+  if (withTotal.length === 0) return undefined;
+  const first = withTotal[0];
+  const firstTotal = codexUsageNums(first.total);
+  const firstLast =
+    first.last && typeof first.last === 'object'
+      ? codexUsageNums(first.last as Record<string, unknown>)
+      : { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0 };
+  const base = {
+    inputTokens: firstTotal.inputTokens - firstLast.inputTokens,
+    outputTokens: firstTotal.outputTokens - firstLast.outputTokens,
+    cachedInputTokens: firstTotal.cachedInputTokens - firstLast.cachedInputTokens,
+  };
+  const lastTotal = codexUsageNums(withTotal[withTotal.length - 1].total);
+  return {
+    inputTokens: lastTotal.inputTokens - base.inputTokens,
+    outputTokens: lastTotal.outputTokens - base.outputTokens,
+    cachedInputTokens: lastTotal.cachedInputTokens - base.cachedInputTokens,
+    raw: withTotal[withTotal.length - 1].total,
   };
 }
 
@@ -345,7 +374,10 @@ async function* runOneTurn(
   const turnState: { error: Error | null } = { error: null };
   let resultText = ''; // accumulated text of all completed agentMessages
   let streamingText = ''; // deltas of the in-progress message
-  let turnUsage: ProviderUsage | undefined;
+  // Collect every tokenUsage/updated payload; the turn total is derived from the
+  // cumulative .total at the end (see codexTurnUsageDelta) — keeping only the
+  // last event undercounts multi-step turns ~6x.
+  const tokenUsageEvents: Array<{ total?: unknown; last?: unknown }> = [];
   let turnRateLimits: ProviderRateLimits | undefined;
   let turnDone = false;
 
@@ -396,11 +428,15 @@ async function* runOneTurn(
         }
         break;
       }
-      case 'thread/tokenUsage/updated':
-        // Codex reports tokens here, not in turn/completed. Keep the latest
-        // (it fires per turn; `?? turnUsage` guards a malformed late event).
-        turnUsage = extractCodexUsage(params) ?? turnUsage;
+      case 'thread/tokenUsage/updated': {
+        // Codex reports tokens here (not in turn/completed), once per step. We
+        // collect them and derive the turn total from the cumulative .total.
+        const tu = params.tokenUsage as
+          | { total?: unknown; last?: unknown }
+          | undefined;
+        if (tu) tokenUsageEvents.push(tu);
         break;
+      }
       case 'account/rateLimits/updated':
         // Subscription quota snapshot (flat ChatGPT plan). Keep the latest.
         turnRateLimits = extractCodexRateLimits(params) ?? turnRateLimits;
@@ -468,8 +504,9 @@ async function* runOneTurn(
       resultText +
       (streamingText ? (resultText ? '\n\n' : '') + streamingText : '');
 
-    // Merge the rate-limit snapshot onto the token usage so it rides the same
-    // result path to the host (present even when no token usage was reported).
+    // Turn token total (cumulative-delta across all tokenUsage events) merged
+    // with the rate-limit snapshot so both ride the same result path to the host.
+    const turnUsage = codexTurnUsageDelta(tokenUsageEvents);
     const usage: ProviderUsage | undefined =
       turnUsage || turnRateLimits
         ? { ...turnUsage, ...(turnRateLimits ? { rateLimits: turnRateLimits } : {}) }
