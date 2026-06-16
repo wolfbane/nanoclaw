@@ -41,6 +41,51 @@ const SPLIT_FAST_PATH = 2000;
 const HARD_SPLIT_LIMIT = 3500;
 
 /**
+ * Wrap GitHub-Flavored-Markdown tables in a fenced code block before
+ * conversion. Telegram has no table syntax, and telegramify-markdown mangles
+ * table rows into INVALID MarkdownV2 — it emits `col\\_a` (an escaped backslash
+ * followed by a *raw* underscore), which opens an italic entity that never
+ * closes, so Telegram rejects the whole message with "can't find end of the
+ * entity" and we fall back to ugly raw text. Fencing the table makes
+ * telegramify treat it as a code block (left verbatim) → valid MarkdownV2 that
+ * renders as aligned monospace. Only a header row immediately followed by a
+ * `|---|` separator counts as a table (so stray `a | b` prose is untouched),
+ * and tables already inside a code fence are left alone.
+ */
+export function fenceMarkdownTables(text: string): string {
+  const lines = text.split('\n');
+  const isRow = (l: string) => /^\s*\|.*\|\s*$/.test(l);
+  const isSeparator = (l: string) => /^\s*\|[\s:|-]+\|\s*$/.test(l);
+  const isFence = (l: string) => /^\s*```/.test(l);
+  const out: string[] = [];
+  let inFence = false;
+  for (let i = 0; i < lines.length; i++) {
+    if (isFence(lines[i])) {
+      inFence = !inFence;
+      out.push(lines[i]);
+      continue;
+    }
+    if (
+      !inFence &&
+      isRow(lines[i]) &&
+      i + 1 < lines.length &&
+      isSeparator(lines[i + 1])
+    ) {
+      out.push('```');
+      while (i < lines.length && isRow(lines[i]) && !isFence(lines[i])) {
+        out.push(lines[i]);
+        i++;
+      }
+      i--; // the for-loop's i++ will re-align
+      out.push('```');
+      continue;
+    }
+    out.push(lines[i]);
+  }
+  return out.join('\n');
+}
+
+/**
  * Convert Claude's CommonMark output into Telegram MarkdownV2.
  *
  * Claude emits standard Markdown (`**bold**`, `_italic_`, `file_name`, lists,
@@ -48,10 +93,11 @@ const HARD_SPLIT_LIMIT = 3500;
  * most of it ("can't find end of the entity"), so we previously dumped those
  * messages as unformatted plain text. telegramify-markdown maps CommonMark to
  * MarkdownV2 and escapes every special char outside entities, so the output
- * always parses. The trailing newline telegramify appends is stripped.
+ * always parses. The trailing newline telegramify appends is stripped. Tables
+ * are fenced first (see fenceMarkdownTables) since telegramify mis-escapes them.
  */
-function toTelegramMarkdownV2(text: string): string {
-  return telegramify(text, 'escape').replace(/\n+$/, '');
+export function toTelegramMarkdownV2(text: string): string {
+  return telegramify(fenceMarkdownTables(text), 'escape').replace(/\n+$/, '');
 }
 
 /**

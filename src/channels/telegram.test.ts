@@ -78,7 +78,12 @@ vi.mock('grammy', () => ({
 }));
 
 import fs from 'fs';
-import { TelegramChannel, TelegramChannelOpts } from './telegram.js';
+import {
+  TelegramChannel,
+  TelegramChannelOpts,
+  fenceMarkdownTables,
+  toTelegramMarkdownV2,
+} from './telegram.js';
 
 // --- Test helpers ---
 
@@ -191,6 +196,41 @@ async function triggerMediaMessage(
 
 // Helper: flush pending microtasks (for async downloadFile().then() chains)
 const flushPromises = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+describe('MarkdownV2 conversion — table handling (delivery fix)', () => {
+  const TABLE = '| col_a | col_b |\n|---|---|\n| 1 | 2 |';
+
+  it('regression: a raw table no longer yields an invalid MarkdownV2 entity', () => {
+    const out = toTelegramMarkdownV2(TABLE);
+    // The bug: telegramify emits `col\\_a` (escaped backslash + RAW underscore),
+    // an unterminated italic entity → Telegram 400. Fencing prevents it.
+    expect(out).not.toMatch(/\\\\_/);
+    // Table content survives verbatim inside a code fence.
+    expect(out).toContain('```');
+    expect(out).toContain('col_a');
+    expect(out).toContain('col_b');
+  });
+
+  it('fences a header+separator table but leaves stray pipes in prose alone', () => {
+    expect(fenceMarkdownTables(TABLE).startsWith('```')).toBe(true);
+    const prose = 'run `a | b` and `c | d` inline';
+    expect(fenceMarkdownTables(prose)).toBe(prose); // no separator row → not a table
+  });
+
+  it('does not double-fence a table already inside a code block', () => {
+    const already = '```\n| a | b |\n|---|---|\n| 1 | 2 |\n```';
+    expect(fenceMarkdownTables(already)).toBe(already);
+  });
+
+  it('handles prose + table + emphasis together without invalid entities', () => {
+    const mixed =
+      'Data:\n\n| Model | Cost |\n|---|---|\n| gpt-5.4 | high |\n\nThat is **important**.';
+    const out = toTelegramMarkdownV2(mixed);
+    expect(out).not.toMatch(/\\\\_/);
+    expect(out).toContain('```');
+    expect(out).toContain('*important*'); // bold preserved as MarkdownV2
+  });
+});
 
 describe('TelegramChannel', () => {
   beforeEach(() => {
