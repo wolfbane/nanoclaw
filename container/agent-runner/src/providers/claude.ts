@@ -147,11 +147,15 @@ export class ClaudeProvider implements AgentProvider {
       additionalDirectories: this.opts.additionalDirectories,
       resume: input.continuation,
       resumeSessionAt: this.opts.resumeAt,
-      // Pin to Sonnet with 1M context window. Default (Opus) is ~5× the
-      // per-token cost; this was dropped by commit f77f9ce during an unrelated
-      // auto-compact change and quietly drove the per-request cost spike.
-      // Resolution order: ProviderOptions.model > CLAUDE_MODEL env > 'sonnet[1m]'.
-      model: this.opts.model ?? process.env.CLAUDE_MODEL ?? 'sonnet[1m]',
+      // Pin to Sonnet at the standard 200K window. Opus (the SDK default) is
+      // ~5× the per-token cost; the [1m] window we previously used pushed the
+      // auto-compaction ceiling to ~830K, so per-group sessions ballooned to
+      // 100K+ tokens that got re-cached every 5 min — the dominant API cost.
+      // A 200K window makes CLAUDE_AUTOCOMPACT_PCT_OVERRIDE (set in
+      // container-runner) bite at a useful absolute size (~60K at 30%). 1M is GA
+      // at flat pricing, so a group that needs it can set CLAUDE_MODEL=sonnet[1m].
+      // Resolution order: ProviderOptions.model > CLAUDE_MODEL env > 'sonnet'.
+      model: this.opts.model ?? process.env.CLAUDE_MODEL ?? 'sonnet',
       systemPrompt,
       allowedTools,
       env,

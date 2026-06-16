@@ -261,9 +261,23 @@ function buildVolumeMounts(
     // Enable agent swarms (subagent orchestration)
     // https://code.claude.com/docs/en/agent-teams#orchestrate-teams-of-claude-code-sessions
     CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1',
-    // Load CLAUDE.md from additional mounted directories
+    // Do NOT auto-load CLAUDE.md from additional mounted directories. Those are
+    // other projects' *developer* docs (e.g. nanoclaw's own ~10KB project
+    // CLAUDE.md, a mounted cents tree's ~20KB) and the runtime assistant doesn't
+    // need them — auto-loading injected them into every request's cached prefix,
+    // inflating prompt-cache write cost. The agent can still Read them on demand.
+    // The legit runtime persona (groups/global/CLAUDE.md) loads via a separate
+    // explicit path (agent-runner index.ts globalClaudeMd), so it's unaffected.
+    // Re-enable per-group via container_config.env if a dev group needs it.
     // https://code.claude.com/docs/en/memory#load-memory-from-additional-directories
-    CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: '1',
+    CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: '0',
+    // Compact a session's context at ~30% of the 200K window (~60K tokens)
+    // instead of the ~83% default (~166K). Caps the accumulated transcript that
+    // gets re-cached on every resume — prompt-cache writes of large contexts are
+    // nanoclaw's dominant API cost. The PreCompact hook archives the full
+    // transcript first, so older context is summarized, not lost. Pairs with the
+    // 200K-window model pin in container/agent-runner/src/providers/claude.ts.
+    CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: '30',
     // Disable Claude's built-in auto-memory. Memory is the model-agnostic
     // group-folder store (the CLAUDE.md "Memory protocol"), written through the
     // agent — a private per-model silo would diverge from what other providers
