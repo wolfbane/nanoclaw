@@ -271,19 +271,28 @@ function buildVolumeMounts(
     // Re-enable per-group via container_config.env if a dev group needs it.
     // https://code.claude.com/docs/en/memory#load-memory-from-additional-directories
     CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: '0',
-    // Compact a session's context at ~30% of the 200K window (~60K tokens)
-    // instead of the ~83% default (~166K). Caps the accumulated transcript that
-    // gets re-cached on every resume — prompt-cache writes of large contexts are
-    // nanoclaw's dominant API cost. The PreCompact hook archives the full
-    // transcript first, so older context is summarized, not lost. Pairs with the
-    // 200K-window model pin in container/agent-runner/src/providers/claude.ts.
-    CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: '30',
+    // NOTE: CLAUDE_AUTOCOMPACT_PCT_OVERRIDE was tried at '30' (compact at ~60K of
+    // the 200K window) for cost, but it THRASHED — 60K is too small to hold a few
+    // turns, so it compacted, refilled within ~3 turns, and compacted again, 3x
+    // in a row. Removed; auto-compaction is governed by CLAUDE_CODE_AUTO_COMPACT_
+    // WINDOW=165000 (agent-runner index.ts), which has stable headroom. Re-tune
+    // there (not via an aggressive pct) if more cost savings are needed.
     // Disable Claude's built-in auto-memory. Memory is the model-agnostic
     // group-folder store (the CLAUDE.md "Memory protocol"), written through the
     // agent — a private per-model silo would diverge from what other providers
     // (e.g. Codex) see. Single source of truth. (07l)
     CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
   };
+  // Keys NanoClaw once set but now actively REMOVES from existing settings.json.
+  // The merge below only adds/overwrites — it never deletes — so a key dropped
+  // from managedClaudeEnv would otherwise linger forever in any group created
+  // while it was set. List retired keys here to have them pruned on every run.
+  const retiredClaudeEnv: string[] = [
+    // Tried at '30' for cost; thrashed (compacted, refilled in ~3 turns, 3x in a
+    // row). See the NOTE in managedClaudeEnv above — governed by
+    // CLAUDE_CODE_AUTO_COMPACT_WINDOW=165000 instead.
+    'CLAUDE_AUTOCOMPACT_PCT_OVERRIDE',
+  ];
   const settingsFile = path.join(groupSessionsDir, 'settings.json');
   let settings: { env?: Record<string, string>; [k: string]: unknown } = {};
   try {
@@ -292,6 +301,7 @@ function buildVolumeMounts(
     /* missing or corrupt → start fresh */
   }
   const mergedEnv = { ...(settings.env ?? {}), ...managedClaudeEnv };
+  for (const k of retiredClaudeEnv) delete mergedEnv[k];
   if (
     !fs.existsSync(settingsFile) ||
     JSON.stringify(settings.env ?? {}) !== JSON.stringify(mergedEnv)

@@ -151,9 +151,12 @@ export class ClaudeProvider implements AgentProvider {
       // ~5× the per-token cost; the [1m] window we previously used pushed the
       // auto-compaction ceiling to ~830K, so per-group sessions ballooned to
       // 100K+ tokens that got re-cached every 5 min — the dominant API cost.
-      // A 200K window makes CLAUDE_AUTOCOMPACT_PCT_OVERRIDE (set in
-      // container-runner) bite at a useful absolute size (~60K at 30%). 1M is GA
-      // at flat pricing, so a group that needs it can set CLAUDE_MODEL=sonnet[1m].
+      // The 200K window keeps that re-cached context bounded. (We also tried an
+      // aggressive CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=30 in container-runner for
+      // extra savings but it thrashed — compacting at ~60K refilled within a few
+      // turns; removed. Auto-compaction is governed by CLAUDE_CODE_AUTO_COMPACT_
+      // WINDOW=165000, set in index.ts.) 1M is GA at flat pricing, so a group
+      // that needs it can set CLAUDE_MODEL=sonnet[1m].
       // Resolution order: ProviderOptions.model > CLAUDE_MODEL env > 'sonnet'.
       model: this.opts.model ?? process.env.CLAUDE_MODEL ?? 'sonnet',
       systemPrompt,
